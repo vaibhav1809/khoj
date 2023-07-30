@@ -771,9 +771,16 @@ async def chat_whatsapp(
 
     actual_response = aggregated_gpt_response.split("### compiled references:")[0]
 
-    twilioResponse = MessagingResponse()
-    twilioResponse.message(actual_response, to=From, from_=To)
-    return Response(content=str(twilioResponse), media_type="application/xml")
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+    client = Client(account_sid, auth_token)
+
+    # Split response into 1600 character chunks
+    chunks = [actual_response[i : i + 1600] for i in range(0, len(actual_response), 1600)]
+    for chunk in chunks:
+        message = client.messages.create(body=chunk, from_=To, to=From)
+
+    return message.sid
 
 
 async def whatsapp_audio_response(request: Request, From: str, To: str, media_filepath: str) -> str:
