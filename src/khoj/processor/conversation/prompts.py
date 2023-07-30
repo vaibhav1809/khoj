@@ -182,56 +182,66 @@ Human: You are Khoj, an extremely smart and helpful search assistant with the ab
 - Add date filters to your search queries from questions and answers when required to retrieve the relevant information.
 
 What searches, if any, will you need to perform to answer the users question?
-Provide search queries as a JSON list of strings
+Provide search queries in XML response format with question tags for each follow-up question.
 Current Date: {current_date}
 
-Q: How was my trip to Cambodia?
+Human: How was my trip to Cambodia?
 
-["How was my trip to Cambodia?"]
+Assistant:
+<response>
+<question>How was my trip to Cambodia?</question>
+</response>
 
-A: The trip was amazing. I went to the Angkor Wat temple and it was beautiful.
+Human: Who did i visit that temple with?
 
-Q: Who did i visit that temple with?
+Assistant:
+<response>
+<question>Who did I visit the Angkor Wat Temple in Cambodia with?</question>
+</response>
 
-["Who did I visit the Angkor Wat Temple in Cambodia with?"]
+Human: What national parks did I go to last year?
 
-A: You visited the Angkor Wat Temple in Cambodia with Pablo, Namita and Xi.
+Assistant:
+<response>
+<question>National park I visited in {last_new_year} dt>='{last_new_year_date}' dt<'{current_new_year_date}'</question>
+</response>
 
-Q: What national parks did I go to last year?
+Human: How are you feeling today?
 
-["National park I visited in {last_new_year} dt>='{last_new_year_date}' dt<'{current_new_year_date}'"]
+Assistant:
+<response>
+</response>
 
-A: You visited the Grand Canyon and Yellowstone National Park in {last_new_year}.
+Human: How many tennis balls fit in the back of a 2002 Honda Civic?
 
-Q: How are you feeling today?
+Assistant:
+<response>
+<question>What is the size of a tennis ball?</question>
+<question>What is the trunk size of a 2002 Honda Civic?</question>
+</response>
 
-[]
+Human: Is Bob older than Tom?
 
-A: I'm feeling a little bored. Helping you will hopefully make me feel better!
+Assistant:
+<response>
+<question>When was Bob born?</question>
+<question>What is Tom's age?</question>
+</response>
 
-Q: How many tennis balls fit in the back of a 2002 Honda Civic?
+Human: What is their age difference?
 
-["What is the size of a tennis ball?", "What is the trunk size of a 2002 Honda Civic?"]
-
-A: 1085 tennis balls will fit in the trunk of a Honda Civic
-
-Q: Is Bob older than Tom?
-
-["When was Bob born?", "What is Tom's age?"]
-
-A: Yes, Bob is older than Tom. As Bob was born on 1984-01-01 and Tom is 30 years old.
-
-Q: What is their age difference?
-
-["What is Bob's age?", "What is Tom's age?"]
-
-A: Bob is {bob_tom_age_difference} years older than Tom. As Bob is {bob_age} years old and Tom is 30 years old.
+Assistant:
+<response>
+<question>What is Bob's age?</question>
+<question>What is Tom's age?</question>
+</response>
 
 Here is some additional context that might help. You can use this context to adjust your response.
 {chat_history}
-Q: {text}
+What searches, if any, will you need to perform to answer the above question? Provide search queries in XML response format with question tags for each follow-up question.
 
-What searches, if any, will you need to perform to answer the users question?
+Human: {text}
+Assistant:
 """
 )
 

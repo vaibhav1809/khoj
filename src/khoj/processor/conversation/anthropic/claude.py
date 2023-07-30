@@ -2,6 +2,7 @@
 import logging
 from datetime import datetime
 from typing import Optional
+import xml.etree.ElementTree as ET
 
 # External Packages
 from langchain.schema import ChatMessage
@@ -43,8 +44,6 @@ def extract_questions_anthropic(
         last_new_year=last_new_year.strftime("%Y"),
         last_new_year_date=last_new_year.strftime("%Y-%m-%d"),
         current_new_year_date=current_new_year.strftime("%Y-%m-%d"),
-        bob_tom_age_difference={current_new_year.year - 1984 - 30},
-        bob_age={current_new_year.year - 1984},
         chat_history=chat_history,
         text=text,
     )
@@ -62,17 +61,10 @@ def extract_questions_anthropic(
 
     # Extract, Clean Message from Claude's Response
     try:
-        questions = (
-            response.content.strip(empty_escape_sequences)
-            .replace("['", '["')
-            .replace("']", '"]')
-            .replace("', '", '", "')
-            .replace('["', "")
-            .replace('"]', "")
-            .split('", "')
-        )
+        root = ET.fromstring(response.content.strip(empty_escape_sequences))
+        questions = [item.text for item in root.findall("question")]
     except:
-        logger.warning(f"Claude returned invalid JSON. Falling back to using user message as search query.\n{response}")
+        logger.warning(f"Claude returned invalid XML. Falling back to using user message as search query.\n{response}")
         questions = [text]
     logger.debug(f"Extracted Questions by Claude: {questions}")
     return questions

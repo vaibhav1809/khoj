@@ -23,6 +23,7 @@ def perform_chat_checks():
     ):
         return
 
+    return
     raise HTTPException(
         status_code=500, detail="Set your OpenAI API key or enable Local LLM via Khoj settings and restart it."
     )
