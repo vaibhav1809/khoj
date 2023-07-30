@@ -2,6 +2,7 @@ import logging
 from datetime import datetime
 from functools import partial
 from typing import List, Optional
+import os
 
 from fastapi import HTTPException, Request
 
@@ -9,6 +10,7 @@ from khoj.utils import state
 from khoj.utils.helpers import timer, log_telemetry
 from khoj.processor.conversation.openai.gpt import converse
 from khoj.processor.conversation.gpt4all.chat_model import converse_offline
+from khoj.processor.conversation.anthropic.claude import converse_anthropic
 from khoj.processor.conversation.utils import reciprocal_conversation_to_chatml, message_to_log, ThreadedGenerator
 
 logger = logging.getLogger(__name__)
@@ -99,7 +101,16 @@ def generate_chat_response(
                 meta_log=meta_log,
             )
 
-            if state.processor_config.conversation.enable_offline_chat:
+            anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+            if anthropic_api_key:
+                chat_response = converse_anthropic(
+                    references=compiled_references,
+                    user_query=q,
+                    conversation_log=meta_log,
+                    api_key=anthropic_api_key,
+                    completion_func=partial_completion,
+                )
+            elif state.processor_config.conversation.enable_offline_chat:
                 loaded_model = state.processor_config.conversation.gpt4all_model.loaded_model
                 chat_response = converse_offline(
                     references=compiled_references,

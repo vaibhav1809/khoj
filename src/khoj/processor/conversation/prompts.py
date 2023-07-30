@@ -6,6 +6,12 @@ from langchain.prompts import PromptTemplate
 ## --
 personality = PromptTemplate.from_template("You are Khoj, a friendly, smart and helpful personal assistant.")
 
+personality_claude = PromptTemplate.from_template(
+    """
+
+Human: You are Khoj, a friendly, smart and helpful personal assistant."""
+)
+
 
 ## General Conversation
 ## --
@@ -14,6 +20,14 @@ general_conversation = PromptTemplate.from_template(
 Using your general knowledge and our past conversations as context, answer the following question.
 Current Date: {current_date}
 
+Question: {query}
+""".strip()
+)
+
+general_conversation_claude = PromptTemplate.from_template(
+    """
+Human: Using your general knowledge and our past conversations as context, answer the following question.
+Current Date: {current_date}
 Question: {query}
 """.strip()
 )
@@ -91,6 +105,15 @@ Question: {query}
 """.strip()
 )
 
+notes_conversation_claude = PromptTemplate.from_template(
+    """
+Human:
+<notes>{references}</notes>
+<date>{current_date}</date>
+Question: {query}
+""".strip()
+)
+
 
 ## Summarize Chat
 ## --
@@ -126,6 +149,9 @@ Question: {user_query}
 Answer (in second person):"""
 )
 
+## Extract Questions
+## --
+
 extract_questions_llamav2_sample = PromptTemplate.from_template(
     """
 <s>[INST]<<SYS>>Current Date: {current_date}<</SYS>>[/INST]</s>
@@ -145,9 +171,70 @@ Use these notes from the user's previous conversations to provide a response:
 """
 )
 
+extract_questions_claude = PromptTemplate.from_template(
+    """
 
-## Extract Questions
-## --
+
+Human: You are Khoj, an extremely smart and helpful search assistant with the ability to retrieve information from the user's notes.
+- The user will provide their questions and answers to you for context.
+- Add as much context from the previous questions and answers as required into your search queries.
+- Break messages into multiple search queries when required to retrieve the relevant information.
+- Add date filters to your search queries from questions and answers when required to retrieve the relevant information.
+
+What searches, if any, will you need to perform to answer the users question?
+Provide search queries as a JSON list of strings
+Current Date: {current_date}
+
+Q: How was my trip to Cambodia?
+
+["How was my trip to Cambodia?"]
+
+A: The trip was amazing. I went to the Angkor Wat temple and it was beautiful.
+
+Q: Who did i visit that temple with?
+
+["Who did I visit the Angkor Wat Temple in Cambodia with?"]
+
+A: You visited the Angkor Wat Temple in Cambodia with Pablo, Namita and Xi.
+
+Q: What national parks did I go to last year?
+
+["National park I visited in {last_new_year} dt>='{last_new_year_date}' dt<'{current_new_year_date}'"]
+
+A: You visited the Grand Canyon and Yellowstone National Park in {last_new_year}.
+
+Q: How are you feeling today?
+
+[]
+
+A: I'm feeling a little bored. Helping you will hopefully make me feel better!
+
+Q: How many tennis balls fit in the back of a 2002 Honda Civic?
+
+["What is the size of a tennis ball?", "What is the trunk size of a 2002 Honda Civic?"]
+
+A: 1085 tennis balls will fit in the trunk of a Honda Civic
+
+Q: Is Bob older than Tom?
+
+["When was Bob born?", "What is Tom's age?"]
+
+A: Yes, Bob is older than Tom. As Bob was born on 1984-01-01 and Tom is 30 years old.
+
+Q: What is their age difference?
+
+["What is Bob's age?", "What is Tom's age?"]
+
+A: Bob is {bob_tom_age_difference} years older than Tom. As Bob is {bob_age} years old and Tom is 30 years old.
+
+Here is some additional context that might help. You can use this context to adjust your response.
+{chat_history}
+Q: {text}
+
+What searches, if any, will you need to perform to answer the users question?
+"""
+)
+
 extract_questions = PromptTemplate.from_template(
     """
 You are Khoj, an extremely smart and helpful search assistant with the ability to retrieve information from the user's notes.

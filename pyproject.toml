@@ -59,6 +59,10 @@ dependencies = [
     "requests >= 2.26.0",
     "bs4 >= 0.0.1",
     "gpt4all >= 1.0.7",
+    "twilio >= 8.5.0",
+    "python-multipart >= 0.0.6",
+    "openai-whisper == 20230314",
+    "anthropic >= 0.3.6",
 ]
 dynamic = ["version"]
 

@@ -5,10 +5,18 @@ import time
 import yaml
 import logging
 import json
+import os
+import requests
+import whisper
+import asyncio
 from typing import List, Optional, Union
 
 # External Packages
 from fastapi import APIRouter, HTTPException, Header, Request
+from fastapi.params import Form
+from twilio.twiml.messaging_response import MessagingResponse
+from twilio.request_validator import RequestValidator
+from twilio.rest import Client
 from sentence_transformers import util
 
 # Internal Packages
@@ -39,12 +47,14 @@ from fastapi.responses import StreamingResponse, Response
 from khoj.routers.helpers import perform_chat_checks, generate_chat_response, update_telemetry_state
 from khoj.processor.conversation.openai.gpt import extract_questions
 from khoj.processor.conversation.gpt4all.chat_model import extract_questions_offline
+from khoj.processor.conversation.anthropic.claude import extract_questions_anthropic
 from fastapi.requests import Request
 
 
 # Initialize Router
 api = APIRouter()
 logger = logging.getLogger(__name__)
+whisper_model = whisper.load_model("medium")
 
 # If it's a demo instance, prevent updating any of the configuration.
 if not state.demo:
@@ -693,6 +703,117 @@ async def chat(
     return Response(content=json.dumps(response_obj), media_type="application/json", status_code=200)
 
 
+@api.post("/whatsapp")
+async def chat_whatsapp(
+    request: Request,
+    From: str = Form(...),
+    Body: Optional[str] = Form(None),
+    To: str = Form(...),
+    MediaUrl0: Optional[str] = Form(None),
+    MediaContentType0: Optional[str] = Form(None),
+) -> Response:
+    # Initialize Variables
+    q = Body
+    n = 5
+
+    if MediaUrl0 is not None and MediaContentType0 is not None and MediaContentType0.startswith("audio/"):
+        audio_url = MediaUrl0
+        audio_type = MediaContentType0.split("/")[1]
+        logger.info(f"Received audio message from {From} with url {audio_url} and type {audio_type}")
+
+        # Process audio message
+        audio_response = requests.get(audio_url)
+        if audio_response.status_code == 200:
+            try:
+                with open(f"audio.{audio_type}", "wb") as f:
+                    f.write(audio_response.content)
+                    f.close()
+                logger.info(f"Saved audio file to audio.{audio_type}")
+                logger.info(f"Transcribing audio file")
+                asyncio.create_task(whatsapp_audio_response(request, From, To, f"audio.{audio_type}"))
+
+                twilioResponse = MessagingResponse()
+                twilioResponse.message("Thinking...hold on a second.", to=From, from_=To)
+                return Response(content=str(twilioResponse), media_type="application/xml")
+            except Exception as e:
+                logger.error(f"Error saving audio file: {e}")
+        else:
+            logger.error(f"Failed to download audio from {audio_url} with status code {audio_response.status_code}")
+
+    # Validate Request from Twilio
+    validator = RequestValidator(os.getenv("TWILIO_AUTH_TOKEN"))
+    form_ = await request.form()
+    if not validator.validate(str(request.url), form_, request.headers.get("X-Twilio-Signature", "")):
+        logger.error("Error in Twilio Signature")
+        raise HTTPException(status_code=400, detail="Error in Twilio Signature")
+
+    perform_chat_checks()
+
+    compiled_references, inferred_queries = await extract_references_and_questions(request, q, (n or 5))
+
+    # Get the (streamed) chat response from GPT.
+    llm_response = generate_chat_response(
+        q,
+        meta_log=state.processor_config.conversation.meta_log,
+        compiled_references=compiled_references,
+        inferred_queries=inferred_queries,
+    )
+    if llm_response is None:
+        return Response(content=llm_response, media_type="text/plain", status_code=500)
+
+    # Get the full response from the generator if the stream is not requested.
+    aggregated_gpt_response = ""
+    while True:
+        try:
+            aggregated_gpt_response += next(llm_response)
+        except StopIteration:
+            break
+
+    actual_response = aggregated_gpt_response.split("### compiled references:")[0]
+
+    twilioResponse = MessagingResponse()
+    twilioResponse.message(actual_response, to=From, from_=To)
+    return Response(content=str(twilioResponse), media_type="application/xml")
+
+
+async def whatsapp_audio_response(request: Request, From: str, To: str, media_filepath: str) -> str:
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+    client = Client(account_sid, auth_token)
+
+    transcription = whisper_model.transcribe(media_filepath)
+    raw_transcription = transcription["text"]
+
+    compiled_references, inferred_queries = await extract_references_and_questions(request, raw_transcription, 5)
+
+    # Get the (streamed) chat response from the LLM.
+    llm_response = generate_chat_response(
+        raw_transcription,
+        meta_log=state.processor_config.conversation.meta_log,
+        compiled_references=compiled_references,
+        inferred_queries=inferred_queries,
+    )
+    if llm_response is None:
+        return Response(content=llm_response, media_type="text/plain", status_code=500)
+
+    # Get the full response from the generator if the stream is not requested.
+    aggregated_gpt_response = ""
+    while True:
+        try:
+            aggregated_gpt_response += next(llm_response)
+        except StopIteration:
+            break
+
+    actual_response = aggregated_gpt_response.split("### compiled references:")[0]
+
+    # Split response into 1600 character chunks
+    chunks = [actual_response[i : i + 1600] for i in range(0, len(actual_response), 1600)]
+    for chunk in chunks:
+        message = client.messages.create(body=chunk, from_=To, to=From)
+
+    return message.sid
+
+
 async def extract_references_and_questions(
     request: Request,
     q: str,
@@ -710,7 +831,11 @@ async def extract_references_and_questions(
         # Infer search queries from user message
         with timer("Extracting search queries took", logger):
             # If we've reached here, either the user has enabled offline chat or the openai model is enabled.
-            if state.processor_config.conversation.enable_offline_chat:
+
+            anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+            if anthropic_api_key:
+                inferred_queries = extract_questions_anthropic(q, api_key=anthropic_api_key, conversation_log=meta_log)
+            elif state.processor_config.conversation.enable_offline_chat:
                 loaded_model = state.processor_config.conversation.gpt4all_model.loaded_model
                 inferred_queries = extract_questions_offline(
                     q, loaded_model=loaded_model, conversation_log=meta_log, should_extract_questions=False

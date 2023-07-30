@@ -21,6 +21,10 @@ warnings.filterwarnings("ignore", message=r"legacy way to download files from th
 # External Packages
 import uvicorn
 from fastapi import FastAPI
+import logging
+from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from rich.logging import RichHandler
 import schedule
 
@@ -31,6 +35,15 @@ from khoj.utils.cli import cli
 
 # Initialize the Application Server
 app = FastAPI()
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    exc_str = f"{exc}".replace("\n", " ").replace("   ", " ")
+    logging.error(f"{request}: {exc_str}")
+    content = {"status_code": 10422, "message": exc_str, "data": None}
+    return JSONResponse(content=content, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
 
 # Setup Logger
 rich_handler = RichHandler(rich_tracebacks=True)
@@ -168,7 +181,8 @@ def poll_task_scheduler():
 
 
 def run_gui():
-    sys.argv += ["--gui"]
+    # sys.argv += ["--gui"]
+    sys.argv += ["-vv"]
     run()
 
 
