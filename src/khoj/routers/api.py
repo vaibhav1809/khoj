@@ -553,6 +553,25 @@ async def chat_options(
     return Response(content=json.dumps(cmd_options), media_type="application/json", status_code=200)
 
 
+async def stream_response(
+    request,
+    common,
+    meta_log,
+    q,
+    n,
+    d,
+    conversation_command,
+    user,
+):
+    # Send initial response
+    yield "Processing request...\n"
+    time.sleep(1)  # simulate delay
+
+    # Send actual content
+    for item in llm_response:
+        yield item
+
+
 @api.get("/chat", response_class=Response)
 @requires(["authenticated"])
 async def chat(
@@ -568,6 +587,15 @@ async def chat(
     user = request.user.object
 
     await is_ready_to_chat(user)
+
+    update_telemetry_state(
+        request=request,
+        telemetry_type="api",
+        api="chat",
+        metadata=chat_metadata,
+        **common.__dict__,
+    )
+
     conversation_command = get_conversation_command(query=q, any_references=True)
 
     q = q.replace(f"/{conversation_command.value}", "").strip()
@@ -605,19 +633,11 @@ async def chat(
 
     chat_metadata.update({"conversation_command": conversation_command.value})
 
-    update_telemetry_state(
-        request=request,
-        telemetry_type="api",
-        api="chat",
-        metadata=chat_metadata,
-        **common.__dict__,
-    )
-
     if llm_response is None:
         return Response(content=llm_response, media_type="text/plain", status_code=500)
 
     if stream:
-        return StreamingResponse(llm_response, media_type="text/event-stream", status_code=200)
+        return StreamingResponse(stream_response(llm_response), media_type="text/event-stream", status_code=200)
 
     iterator = AsyncIteratorWrapper(llm_response)
 
