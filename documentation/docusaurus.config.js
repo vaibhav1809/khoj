@@ -86,18 +86,23 @@ const config = {
         },
         items: [
           {
+            href: '/blog',
+            label: '📝 Blog',
+            position: 'left',
+          },
+          {
             href: 'https://github.com/khoj-ai/khoj',
             label: '📖 GitHub',
             position: 'right',
           },
           {
-            href: 'https://app.khoj.dev/login',
-            label: '🌍 Cloud',
+            href: 'https://discord.gg/BDgyabRM6e',
+            label: '💬 Discord',
             position: 'right',
           },
           {
-            href: 'https://discord.gg/BDgyabRM6e',
-            label: '💬 Discord',
+            href: 'https://app.khoj.dev/login',
+            label: '🌍 Try it',
             position: 'right',
           },
         ],
