@@ -9,7 +9,7 @@ hide_table_of_contents: false
 date: 2024-02-28
 ---
 
-## Drawbacks of closed personalized AI services
+## Why closed, personalized AI services are doomed
 About a week ago, Google launched its new, rebranded personal AI assistant, Gemini. It got rather [mixed reviews](https://twitter.com/mjuric/status/1761981816125469064). At its core, the major problem Gemini has had is that it was overtly censored. Users were finding that it was resolute to only generate images of people who were non-white, despite the explicit prompts it received to do otherwise. If you want to see for yourself, [here](https://twitter.com/debarghya_das/status/1759786243519615169) are [some](https://twitter.com/iamyesyouareno/status/1760350903511449717) [examples](https://twitter.com/yishan/status/176085921487513216).
 
 The image generation capability got so much backlash that Google [paused the feature](https://web.archive.org/web/20240226020752/https://blog.google/products/gemini/gemini-image-generation-issue/) for the time being. I will say, though, the images it generated were really impressive!
@@ -23,13 +23,13 @@ The issue is with a corporation deciding which values should be promoted for peo
 
 :::
 
-A week or so before the Gemini debacle, some anecdotal reports were emerging around how ChatGPT's performance has been degrading. Some people were seeing [deranged, garbled output](http://web.archive.org/web/20240228160957/https://arstechnica.com/information-technology/2024/02/chatgpt-alarms-users-by-spitting-out-shakespearean-nonsense-and-rambling/), and others were generally seeing the chatbot being less useful for basic tasks. OpenAI has reported that there was a GPU configuration issue that caused this behavior. Some Twitter people claimed they were able to extract its [system prompt](https://twitter.com/dylan522p/status/1755086111397863777) and saw some wonky things leading to degenerated utility. This is unverified, but it gets at a deep underlying paranoia that will always exist in an environment like this of closed software.
+A week or so before the Gemini debacle, some anecdotal reports were emerging around how ChatGPT's performance has been degrading. Some people were seeing [deranged, garbled output](http://web.archive.org/web/20240228160957/https://arstechnica.com/information-technology/2024/02/chatgpt-alarms-users-by-spitting-out-shakespearean-nonsense-and-rambling/), and others were generally seeing the chatbot being less useful for basic tasks. OpenAI has reported that there was a GPU configuration issue that caused this behavior. Some Twitter people claimed they were able to extract its [system prompt](https://twitter.com/dylan522p/status/1755086111397863777) and saw some wonky things leading to degenerated utility. This is unverified, but it gets at a deep underlying paranoia that will always exist in an environment like this of closed software. These kinds of events create a baseline trust issue in the consumer.
 
 As the organizations that implement these services become more opaque and ideological, the people who use these services lose access to freedom of thought and information. People need to have the option to know that they’re not being fed a silent dogma, no matter how well-intentioned the dogmatists are.
 
 ## Open-source is more observable, trustworthy, and aligned
 
-We want our personal AIs to be available, responsive, and competent. AI is going to be commonplace in our lives. We'll be using natural language interfaces to interact with everyday technologies. If we don't move intentionally now, we'll have closed, misaligned, and exploitative AIs.
+We want our personal AIs to be available, responsive, and competent. AI is going to be commonplace in our lives. We'll be using natural language interfaces to interact with everyday technologies. If we don't move intentionally now, we'll have closed, misaligned, and exploitative AI agents.
 
 :::tip[The Solution]
 
