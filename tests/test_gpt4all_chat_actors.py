@@ -1,7 +1,5 @@
-# Standard Packages
 from datetime import datetime
 
-# External Packages
 import pytest
 
 SKIP_TESTS = True
@@ -18,11 +16,15 @@ try:
 except ModuleNotFoundError as e:
     print("There was an error importing GPT4All. Please run pip install gpt4all in order to install it.")
 
-# Internal Packages
-from khoj.processor.conversation.gpt4all.chat_model import converse_offline, extract_questions_offline, filter_questions
-from khoj.processor.conversation.gpt4all.utils import download_model
 
+from khoj.processor.conversation.offline.chat_model import (
+    converse_offline,
+    extract_questions_offline,
+    filter_questions,
+)
+from khoj.processor.conversation.offline.utils import download_model
 from khoj.processor.conversation.utils import message_to_log
+from khoj.routers.helpers import aget_relevant_output_modes
 
 MODEL_NAME = "mistral-7b-instruct-v0.1.Q4_0.gguf"
 
@@ -40,7 +42,7 @@ freezegun.configure(extend_ignore_list=["transformers"])
 # ----------------------------------------------------------------------------------------------------
 @pytest.mark.xfail(reason="Search actor isn't very date aware nor capable of formatting")
 @pytest.mark.chatquality
-@freeze_time("1984-04-02")
+@freeze_time("1984-04-02", ignore=["transformers"])
 def test_extract_question_with_date_filter_from_relative_day(loaded_model):
     # Act
     response = extract_questions_offline("Where did I go for dinner yesterday?", loaded_model=loaded_model)
@@ -60,7 +62,7 @@ def test_extract_question_with_date_filter_from_relative_day(loaded_model):
 # ----------------------------------------------------------------------------------------------------
 @pytest.mark.xfail(reason="Search actor still isn't very date aware nor capable of formatting")
 @pytest.mark.chatquality
-@freeze_time("1984-04-02")
+@freeze_time("1984-04-02", ignore=["transformers"])
 def test_extract_question_with_date_filter_from_relative_month(loaded_model):
     # Act
     response = extract_questions_offline("Which countries did I visit last month?", loaded_model=loaded_model)
@@ -82,7 +84,7 @@ def test_extract_question_with_date_filter_from_relative_month(loaded_model):
 # ----------------------------------------------------------------------------------------------------
 @pytest.mark.xfail(reason="Chat actor still isn't very date aware nor capable of formatting")
 @pytest.mark.chatquality
-@freeze_time("1984-04-02")
+@freeze_time("1984-04-02", ignore=["transformers"])
 def test_extract_question_with_date_filter_from_relative_year():
     # Act
     response = extract_questions_offline("Which countries have I visited this year?")
@@ -101,7 +103,7 @@ def test_extract_question_with_date_filter_from_relative_year():
 
 # ----------------------------------------------------------------------------------------------------
 @pytest.mark.chatquality
-@freeze_time("1984-04-02")
+@freeze_time("1984-04-02", ignore=["transformers"])
 def test_extract_question_includes_root_question(loaded_model):
     # Act
     response = extract_questions_offline("Which countries have I visited this year?", loaded_model=loaded_model)
@@ -494,6 +496,34 @@ def test_filter_questions():
     filtered_questions = filter_questions(test_questions)
     assert len(filtered_questions) == 1
     assert filtered_questions[0] == "Who is on the basketball team?"
+
+
+# ----------------------------------------------------------------------------------------------------
+@pytest.mark.anyio
+@pytest.mark.django_db(transaction=True)
+async def test_use_default_response_mode(client_offline_chat):
+    # Arrange
+    user_query = "What's the latest in the Israel/Palestine conflict?"
+
+    # Act
+    mode = await aget_relevant_output_modes(user_query, {})
+
+    # Assert
+    assert mode.value == "default"
+
+
+# ----------------------------------------------------------------------------------------------------
+@pytest.mark.anyio
+@pytest.mark.django_db(transaction=True)
+async def test_use_image_response_mode(client_offline_chat):
+    # Arrange
+    user_query = "Paint a picture of the scenery in Timbuktu in the winter"
+
+    # Act
+    mode = await aget_relevant_output_modes(user_query, {})
+
+    # Assert
+    assert mode.value == "image"
 
 
 # Helpers

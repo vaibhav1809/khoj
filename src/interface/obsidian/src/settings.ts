@@ -1,6 +1,6 @@
 import { App, Notice, PluginSettingTab, Setting, TFile } from 'obsidian';
 import Khoj from 'src/main';
-import { updateContentIndex } from './utils';
+import { canConnectToBackend, getBackendStatusMessage, updateContentIndex } from './utils';
 
 export interface KhojSetting {
     resultsCount: number;
@@ -8,16 +8,18 @@ export interface KhojSetting {
     khojApiKey: string;
     connectedToBackend: boolean;
     autoConfigure: boolean;
-    lastSyncedFiles: TFile[];
+    lastSync: Map<TFile, number>;
+    userEmail: string;
 }
 
 export const DEFAULT_SETTINGS: KhojSetting = {
     resultsCount: 6,
-    khojUrl: 'http://127.0.0.1:42110',
+    khojUrl: 'https://app.khoj.dev',
     khojApiKey: '',
     connectedToBackend: false,
     autoConfigure: true,
-    lastSyncedFiles: []
+    lastSync: new Map(),
+    userEmail: '',
 }
 
 export class KhojSettingTab extends PluginSettingTab {
@@ -33,7 +35,15 @@ export class KhojSettingTab extends PluginSettingTab {
         containerEl.empty();
 
         // Add notice whether able to connect to khoj backend or not
-        containerEl.createEl('small', { text: this.getBackendStatusMessage() });
+        let backendStatusEl = containerEl.createEl('small', {
+            text: getBackendStatusMessage(
+                this.plugin.settings.connectedToBackend,
+                this.plugin.settings.userEmail,
+                this.plugin.settings.khojUrl,
+                this.plugin.settings.khojApiKey
+            )}
+        );
+        let backendStatusMessage: string = '';
 
         // Add khoj settings configurable from the plugin settings tab
         new Setting(containerEl)
@@ -42,9 +52,15 @@ export class KhojSettingTab extends PluginSettingTab {
             .addText(text => text
                 .setValue(`${this.plugin.settings.khojUrl}`)
                 .onChange(async (value) => {
-                    this.plugin.settings.khojUrl = value.trim();
+                    this.plugin.settings.khojUrl = value.trim().replace(/\/$/, '');
+                    ({
+                        connectedToBackend: this.plugin.settings.connectedToBackend,
+                        userEmail: this.plugin.settings.userEmail,
+                        statusMessage: backendStatusMessage,
+                    } = await canConnectToBackend(this.plugin.settings.khojUrl, this.plugin.settings.khojApiKey));
+
                     await this.plugin.saveSettings();
-                    containerEl.firstElementChild?.setText(this.getBackendStatusMessage());
+                    backendStatusEl.setText(backendStatusMessage);
                 }));
         new Setting(containerEl)
             .setName('Khoj API Key')
@@ -53,7 +69,13 @@ export class KhojSettingTab extends PluginSettingTab {
                 .setValue(`${this.plugin.settings.khojApiKey}`)
                 .onChange(async (value) => {
                     this.plugin.settings.khojApiKey = value.trim();
+                    ({
+                        connectedToBackend: this.plugin.settings.connectedToBackend,
+                        userEmail: this.plugin.settings.userEmail,
+                        statusMessage: backendStatusMessage,
+                    } = await canConnectToBackend(this.plugin.settings.khojUrl, this.plugin.settings.khojApiKey));
                     await this.plugin.saveSettings();
+                    backendStatusEl.setText(backendStatusMessage);
                 }));
         new Setting(containerEl)
             .setName('Results Count')
@@ -110,8 +132,8 @@ export class KhojSettingTab extends PluginSettingTab {
                     }, 300);
                     this.plugin.registerInterval(progress_indicator);
 
-                    this.plugin.settings.lastSyncedFiles = await updateContentIndex(
-                        this.app.vault, this.plugin.settings, this.plugin.settings.lastSyncedFiles, true
+                    this.plugin.settings.lastSync = await updateContentIndex(
+                        this.app.vault, this.plugin.settings, this.plugin.settings.lastSync, true
                     );
                     new Notice('✅ Updated Khoj index.');
 
@@ -122,11 +144,5 @@ export class KhojSettingTab extends PluginSettingTab {
                     indexVaultSetting = indexVaultSetting.setDisabled(false);
                 })
             );
-    }
-
-    getBackendStatusMessage() {
-        return !this.plugin.settings.connectedToBackend
-            ? '❗Disconnected from Khoj backend. Ensure Khoj backend is running and Khoj URL is correctly set below.'
-            : '✅ Connected to Khoj backend.';
     }
 }

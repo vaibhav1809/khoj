@@ -1,14 +1,14 @@
-# Standard Packages
+import os
 import urllib.parse
+from urllib.parse import quote
 
-# External Packages
 import pytest
-from freezegun import freeze_time
 from faker import Faker
+from freezegun import freeze_time
 
-# Internal Packages
 from khoj.processor.conversation import prompts
 from khoj.processor.conversation.utils import message_to_log
+from khoj.routers.helpers import aget_relevant_information_sources
 from tests.helpers import ConversationFactory
 
 SKIP_TESTS = True
@@ -22,15 +22,21 @@ fake = Faker()
 
 # Helpers
 # ----------------------------------------------------------------------------------------------------
-def populate_chat_history(message_list, user):
+def generate_history(message_list):
     # Generate conversation logs
     conversation_log = {"chat": []}
-    for user_message, llm_message, context in message_list:
+    for user_message, gpt_message, context in message_list:
         conversation_log["chat"] += message_to_log(
             user_message,
-            llm_message,
+            gpt_message,
             {"context": context, "intent": {"query": user_message, "inferred-queries": f'["{user_message}"]'}},
         )
+    return conversation_log
+
+
+def populate_chat_history(message_list, user):
+    # Generate conversation logs
+    conversation_log = generate_history(message_list)
 
     # Update Conversation Metadata Logs in Database
     ConversationFactory(user=user, conversation_log=conversation_log)
@@ -51,6 +57,51 @@ def test_chat_with_no_chat_history_or_retrieved_content_gpt4all(client_offline_c
     assert response.status_code == 200
     assert any([expected_response in response_message for expected_response in expected_responses]), (
         "Expected assistants name, [K|k]hoj, in response but got: " + response_message
+    )
+
+
+# ----------------------------------------------------------------------------------------------------
+@pytest.mark.skipif(os.getenv("SERPER_DEV_API_KEY") is None, reason="requires SERPER_DEV_API_KEY")
+@pytest.mark.chatquality
+@pytest.mark.django_db(transaction=True)
+def test_chat_with_online_content(client_offline_chat):
+    # Act
+    q = "/online give me the link to paul graham's essay how to do great work"
+    encoded_q = quote(q, safe="")
+    response = client_offline_chat.get(f"/api/chat?q={encoded_q}&stream=true")
+    response_message = response.content.decode("utf-8")
+
+    response_message = response_message.split("### compiled references")[0]
+
+    # Assert
+    expected_responses = ["http://www.paulgraham.com/greatwork.html"]
+    assert response.status_code == 200
+    assert any([expected_response in response_message for expected_response in expected_responses]), (
+        "Expected links or serper not setup in response but got: " + response_message
+    )
+
+
+# ----------------------------------------------------------------------------------------------------
+@pytest.mark.skipif(
+    os.getenv("SERPER_DEV_API_KEY") is None or os.getenv("OLOSTEP_API_KEY") is None,
+    reason="requires SERPER_DEV_API_KEY and OLOSTEP_API_KEY",
+)
+@pytest.mark.chatquality
+@pytest.mark.django_db(transaction=True)
+def test_chat_with_online_webpage_content(client_offline_chat):
+    # Act
+    q = "/online how many firefighters were involved in the great chicago fire and which year did it take place?"
+    encoded_q = quote(q, safe="")
+    response = client_offline_chat.get(f"/api/chat?q={encoded_q}&stream=true")
+    response_message = response.content.decode("utf-8")
+
+    response_message = response_message.split("### compiled references")[0]
+
+    # Assert
+    expected_responses = ["185", "1871", "horse"]
+    assert response.status_code == 200
+    assert any([expected_response in response_message for expected_response in expected_responses]), (
+        "Expected links or serper not setup in response but got: " + response_message
     )
 
 
@@ -254,14 +305,16 @@ def test_answer_not_known_using_notes_command(client_offline_chat, default_user2
 
 
 # ----------------------------------------------------------------------------------------------------
-@pytest.mark.xfail(AssertionError, reason="Chat director not capable of answering time aware questions yet")
 @pytest.mark.chatquality
 @pytest.mark.django_db(transaction=True)
-@freeze_time("2023-04-01")
+@freeze_time("2023-04-01", ignore=["transformers"])
 def test_answer_requires_current_date_awareness(client_offline_chat):
     "Chat actor should be able to answer questions relative to current date using provided notes"
+    # Arrange
+    query = urllib.parse.quote("Where did I have lunch today?")
+
     # Act
-    response = client_offline_chat.get(f'/api/chat?q="Where did I have lunch today?"&stream=true')
+    response = client_offline_chat.get(f"/api/chat?q={query}&stream=true")
     response_message = response.content.decode("utf-8")
 
     # Assert
@@ -276,7 +329,7 @@ def test_answer_requires_current_date_awareness(client_offline_chat):
 @pytest.mark.xfail(AssertionError, reason="Chat director not capable of answering this question yet")
 @pytest.mark.chatquality
 @pytest.mark.django_db(transaction=True)
-@freeze_time("2023-04-01")
+@freeze_time("2023-04-01", ignore=["transformers"])
 def test_answer_requires_date_aware_aggregation_across_provided_notes(client_offline_chat):
     "Chat director should be able to answer questions that require date aware aggregation across multiple notes"
     # Act
@@ -289,7 +342,6 @@ def test_answer_requires_date_aware_aggregation_across_provided_notes(client_off
 
 
 # ----------------------------------------------------------------------------------------------------
-@pytest.mark.xfail(AssertionError, reason="Chat director not capable of answering this question yet")
 @pytest.mark.chatquality
 @pytest.mark.django_db(transaction=True)
 def test_answer_general_question_not_in_chat_history_or_retrieved_content(client_offline_chat, default_user2):
@@ -381,7 +433,6 @@ def test_answer_chat_history_very_long(client_offline_chat, default_user2):
 
 
 # ----------------------------------------------------------------------------------------------------
-@pytest.mark.xfail(AssertionError, reason="Chat director not capable of answering this question yet")
 @pytest.mark.chatquality
 @pytest.mark.django_db(transaction=True)
 def test_answer_requires_multiple_independent_searches(client_offline_chat):
@@ -396,3 +447,89 @@ def test_answer_requires_multiple_independent_searches(client_offline_chat):
     assert any([expected_response in response_message.lower() for expected_response in expected_responses]), (
         "Expected Xi is older than Namita, but got: " + response_message
     )
+
+
+# ----------------------------------------------------------------------------------------------------
+@pytest.mark.anyio
+@pytest.mark.django_db(transaction=True)
+async def test_get_correct_tools_online(client_offline_chat):
+    # Arrange
+    user_query = "What's the weather in Patagonia this week?"
+
+    # Act
+    tools = await aget_relevant_information_sources(user_query, {})
+
+    # Assert
+    tools = [tool.value for tool in tools]
+    assert tools == ["online"]
+
+
+# ----------------------------------------------------------------------------------------------------
+@pytest.mark.anyio
+@pytest.mark.django_db(transaction=True)
+async def test_get_correct_tools_notes(client_offline_chat):
+    # Arrange
+    user_query = "Where did I go for my first battleship training?"
+
+    # Act
+    tools = await aget_relevant_information_sources(user_query, {})
+
+    # Assert
+    tools = [tool.value for tool in tools]
+    assert tools == ["notes"]
+
+
+# ----------------------------------------------------------------------------------------------------
+@pytest.mark.anyio
+@pytest.mark.django_db(transaction=True)
+async def test_get_correct_tools_online_or_general_and_notes(client_offline_chat):
+    # Arrange
+    user_query = "What's the highest point in Patagonia and have I been there?"
+
+    # Act
+    tools = await aget_relevant_information_sources(user_query, {})
+
+    # Assert
+    tools = [tool.value for tool in tools]
+    assert len(tools) == 2
+    assert "online" or "general" in tools
+    assert "notes" in tools
+
+
+# ----------------------------------------------------------------------------------------------------
+@pytest.mark.anyio
+@pytest.mark.django_db(transaction=True)
+async def test_get_correct_tools_general(client_offline_chat):
+    # Arrange
+    user_query = "How many noble gases are there?"
+
+    # Act
+    tools = await aget_relevant_information_sources(user_query, {})
+
+    # Assert
+    tools = [tool.value for tool in tools]
+    assert tools == ["general"]
+
+
+# ----------------------------------------------------------------------------------------------------
+@pytest.mark.anyio
+@pytest.mark.django_db(transaction=True)
+async def test_get_correct_tools_with_chat_history(client_offline_chat):
+    # Arrange
+    user_query = "What's the latest in the Israel/Palestine conflict?"
+    chat_log = [
+        (
+            "Let's talk about the current events around the world.",
+            "Sure, let's discuss the current events. What would you like to know?",
+            [],
+        ),
+        ("What's up in New York City?", "A Pride parade has recently been held in New York City, on July 31st.", []),
+    ]
+    chat_history = populate_chat_history(chat_log)
+
+    # Act
+    tools = await aget_relevant_information_sources(user_query, chat_history)
+
+    # Assert
+    tools = [tool.value for tool in tools]
+    assert tools == ["online"]

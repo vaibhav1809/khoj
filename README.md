@@ -5,6 +5,7 @@
 [![test](https://github.com/khoj-ai/khoj/actions/workflows/test.yml/badge.svg)](https://github.com/khoj-ai/khoj/actions/workflows/test.yml)
 [![dockerize](https://github.com/khoj-ai/khoj/actions/workflows/dockerize.yml/badge.svg)](https://github.com/khoj-ai/khoj/pkgs/container/khoj)
 [![pypi](https://github.com/khoj-ai/khoj/actions/workflows/pypi.yml/badge.svg)](https://pypi.org/project/khoj-assistant/)
+![Discord](https://img.shields.io/discord/1112065956647284756?style=plastic&label=discord)
 
 </div>
 
@@ -28,9 +29,10 @@
 
 ***
 
-Khoj is a desktop application to search and chat with your notes, documents and images.<br />
-It is an offline-first, open source AI personal assistant accessible from your Emacs, Obsidian or Web browser.<br />
-It works with jpeg, markdown, notion, org-mode, pdf files and github repositories.<br />
+Khoj is an AI application to search and chat with your notes and documents.<br />
+It is open-source, self-hostable and accessible on Desktop, Emacs, Obsidian, Web and Whatsapp.<br />
+It works with pdf, markdown, org-mode, notion files and github repositories.<br />
+It can paint, search the internet and understand speech.<br />
 
 ***
 
@@ -40,4 +42,13 @@ It works with jpeg, markdown, notion, org-mode, pdf files and github repositorie
 |:---------:|:-------:|
 | Quickly retrieve relevant documents using natural language | Get answers and create content from your existing knowledge base |
 | Does not need internet | Can be configured to work without internet |
-| <img src="https://docs.khoj.dev/assets/khoj_search_on_web.png" width="400px"> | <img src="https://docs.khoj.dev/assets/khoj_chat_on_web.png" width="400px"> |
+| <img src="https://docs.khoj.dev/img/khoj_search_on_web.png" width="400px"> | <img src="https://docs.khoj.dev/img/khoj_chat_on_web.png" width="400px"> |
+
+## Contributors
+Cheers to our awesome contributors! 🎉
+
+<a href="https://github.com/khoj-ai/khoj/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=khoj-ai/khoj" />
+</a>
+
+Made with [contrib.rocks](https://contrib.rocks).

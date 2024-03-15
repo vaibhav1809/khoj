@@ -1,48 +1,47 @@
-# External Packages
 import os
-from fastapi.testclient import TestClient
 from pathlib import Path
+
 import pytest
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi import FastAPI
-import os
-from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
-
-# Internal Packages
-from khoj.configure import configure_routes, configure_search_types, configure_middleware
+from khoj.configure import (
+    configure_middleware,
+    configure_routes,
+    configure_search_types,
+)
+from khoj.database.models import (
+    GithubConfig,
+    GithubRepoConfig,
+    KhojApiUser,
+    KhojUser,
+    LocalMarkdownConfig,
+    LocalOrgConfig,
+    LocalPlaintextConfig,
+)
+from khoj.processor.content.org_mode.org_to_entries import OrgToEntries
+from khoj.processor.content.plaintext.plaintext_to_entries import PlaintextToEntries
 from khoj.processor.embeddings import CrossEncoderModel, EmbeddingsModel
-from khoj.processor.plaintext.plaintext_to_entries import PlaintextToEntries
+from khoj.routers.indexer import configure_content
 from khoj.search_type import image_search, text_search
+from khoj.utils import fs_syncer, state
 from khoj.utils.config import SearchModels
 from khoj.utils.constants import web_directory
 from khoj.utils.helpers import resolve_absolute_path
 from khoj.utils.rawconfig import (
     ContentConfig,
     ImageContentConfig,
-    SearchConfig,
     ImageSearchConfig,
+    SearchConfig,
 )
-from khoj.utils import state, fs_syncer
-from khoj.routers.indexer import configure_content
-from khoj.processor.org_mode.org_to_entries import OrgToEntries
-from database.models import (
-    KhojApiUser,
-    LocalOrgConfig,
-    LocalMarkdownConfig,
-    LocalPlaintextConfig,
-    GithubConfig,
-    KhojUser,
-    GithubRepoConfig,
-)
-
 from tests.helpers import (
-    UserFactory,
     ChatModelOptionsFactory,
-    OpenAIProcessorConversationConfigFactory,
     OfflineChatProcessorConversationConfigFactory,
-    UserConversationProcessorConfigFactory,
+    OpenAIProcessorConversationConfigFactory,
     SubscriptionFactory,
+    UserConversationProcessorConfigFactory,
+    UserFactory,
 )
 
 
@@ -53,8 +52,10 @@ def enable_db_access_for_all_tests(db):
 
 @pytest.fixture(scope="session")
 def search_config() -> SearchConfig:
-    state.embeddings_model = EmbeddingsModel()
-    state.cross_encoder_model = CrossEncoderModel()
+    state.embeddings_model = dict()
+    state.embeddings_model["default"] = EmbeddingsModel()
+    state.cross_encoder_model = dict()
+    state.cross_encoder_model["default"] = CrossEncoderModel()
 
     model_dir = resolve_absolute_path("~/.khoj/search")
     model_dir.mkdir(parents=True, exist_ok=True)
@@ -112,6 +113,24 @@ def default_user3():
 
 @pytest.mark.django_db
 @pytest.fixture
+def default_user4():
+    """
+    This user should not have a valid subscription
+    """
+    if KhojUser.objects.filter(username="default4").exists():
+        return KhojUser.objects.get(username="default4")
+
+    user = KhojUser.objects.create(
+        username="default4",
+        email="default4@example.com",
+        password="default4",
+    )
+    SubscriptionFactory(user=user, renewal_date=None)
+    return user
+
+
+@pytest.mark.django_db
+@pytest.fixture
 def api_user(default_user):
     if KhojApiUser.objects.filter(user=default_user).exists():
         return KhojApiUser.objects.get(user=default_user)
@@ -146,6 +165,19 @@ def api_user3(default_user3):
         user=default_user3,
         name="api-key",
         token="kk-diff-secret-3",
+    )
+
+
+@pytest.mark.django_db
+@pytest.fixture
+def api_user4(default_user4):
+    if KhojApiUser.objects.filter(user=default_user4).exists():
+        return KhojApiUser.objects.get(user=default_user4)
+
+    return KhojApiUser.objects.create(
+        user=default_user4,
+        name="api-key",
+        token="kk-diff-secret-4",
     )
 
 
@@ -222,51 +254,45 @@ def md_content_config():
 
 @pytest.fixture(scope="function")
 def chat_client(search_config: SearchConfig, default_user2: KhojUser):
-    # Initialize app state
-    state.config.search_type = search_config
-    state.SearchType = configure_search_types()
+    return chat_client_builder(search_config, default_user2, require_auth=False)
 
-    LocalMarkdownConfig.objects.create(
-        input_files=None,
-        input_filter=["tests/data/markdown/*.markdown"],
-        user=default_user2,
-    )
 
-    # Index Markdown Content for Search
-    all_files = fs_syncer.collect_files(user=default_user2)
-    state.content_index, _ = configure_content(
-        state.content_index, state.config.content_type, all_files, state.search_models, user=default_user2
-    )
-
-    # Initialize Processor from Config
-    if os.getenv("OPENAI_API_KEY"):
-        chat_model = ChatModelOptionsFactory(chat_model="gpt-3.5-turbo", model_type="openai")
-        OpenAIProcessorConversationConfigFactory()
-        UserConversationProcessorConfigFactory(user=default_user2, setting=chat_model)
-
-    state.anonymous_mode = True
-
-    app = FastAPI()
-
-    configure_routes(app)
-    configure_middleware(app)
-    app.mount("/static", StaticFiles(directory=web_directory), name="static")
-    return TestClient(app)
+@pytest.fixture(scope="function")
+def chat_client_with_auth(search_config: SearchConfig, default_user2: KhojUser):
+    return chat_client_builder(search_config, default_user2, require_auth=True)
 
 
 @pytest.fixture(scope="function")
 def chat_client_no_background(search_config: SearchConfig, default_user2: KhojUser):
+    return chat_client_builder(search_config, default_user2, index_content=False, require_auth=False)
+
+
+@pytest.mark.django_db
+def chat_client_builder(search_config, user, index_content=True, require_auth=False):
     # Initialize app state
     state.config.search_type = search_config
     state.SearchType = configure_search_types()
+
+    if index_content:
+        LocalMarkdownConfig.objects.create(
+            input_files=None,
+            input_filter=["tests/data/markdown/*.markdown"],
+            user=user,
+        )
+
+        # Index Markdown Content for Search
+        all_files = fs_syncer.collect_files(user=user)
+        state.content_index, _ = configure_content(
+            state.content_index, state.config.content_type, all_files, state.search_models, user=user
+        )
 
     # Initialize Processor from Config
     if os.getenv("OPENAI_API_KEY"):
         chat_model = ChatModelOptionsFactory(chat_model="gpt-3.5-turbo", model_type="openai")
         OpenAIProcessorConversationConfigFactory()
-        UserConversationProcessorConfigFactory(user=default_user2, setting=chat_model)
+        UserConversationProcessorConfigFactory(user=user, setting=chat_model)
 
-    state.anonymous_mode = True
+    state.anonymous_mode = not require_auth
 
     app = FastAPI()
 
@@ -294,8 +320,10 @@ def client(
     state.config.content_type = content_config
     state.config.search_type = search_config
     state.SearchType = configure_search_types()
-    state.embeddings_model = EmbeddingsModel()
-    state.cross_encoder_model = CrossEncoderModel()
+    state.embeddings_model = dict()
+    state.embeddings_model["default"] = EmbeddingsModel()
+    state.cross_encoder_model = dict()
+    state.cross_encoder_model["default"] = CrossEncoderModel()
 
     # These lines help us Mock the Search models for these search types
     state.search_models.image_search = image_search.initialize_model(search_config.image)
@@ -384,6 +412,45 @@ def sample_org_data():
 def get_sample_data(type):
     sample_data = {
         "org": {
+            "elisp.org": """
+* Emacs Khoj
+  /An Emacs interface for [[https://github.com/khoj-ai/khoj][khoj]]/
+
+** Requirements
+   - Install and Run [[https://github.com/khoj-ai/khoj][khoj]]
+
+** Installation
+*** Direct
+     - Put ~khoj.el~ in your Emacs load path. For e.g ~/.emacs.d/lisp
+     - Load via ~use-package~ in your ~/.emacs.d/init.el or .emacs file by adding below snippet
+       #+begin_src elisp
+         ;; Khoj Package
+         (use-package khoj
+           :load-path "~/.emacs.d/lisp/khoj.el"
+           :bind ("C-c s" . 'khoj))
+       #+end_src
+
+*** Using [[https://github.com/quelpa/quelpa#installation][Quelpa]]
+     - Ensure [[https://github.com/quelpa/quelpa#installation][Quelpa]], [[https://github.com/quelpa/quelpa-use-package#installation][quelpa-use-package]] are installed
+     - Add below snippet to your ~/.emacs.d/init.el or .emacs config file and execute it.
+       #+begin_src elisp
+         ;; Khoj Package
+         (use-package khoj
+           :quelpa (khoj :fetcher url :url "https://raw.githubusercontent.com/khoj-ai/khoj/master/interface/emacs/khoj.el")
+           :bind ("C-c s" . 'khoj))
+       #+end_src
+
+** Usage
+   1. Call ~khoj~ using keybinding ~C-c s~ or ~M-x khoj~
+   2. Enter Query in Natural Language
+      e.g "What is the meaning of life?" "What are my life goals?"
+   3. Wait for results
+      *Note: It takes about 15s on a Mac M1 and a ~100K lines corpus of org-mode files*
+   4. (Optional) Narrow down results further
+      Include/Exclude specific words from results by adding to query
+      e.g "What is the meaning of life? -god +none"
+
+""",
             "readme.org": """
 * Khoj
   /Allow natural language search on user content like notes, images using transformer based models/
@@ -399,7 +466,7 @@ def get_sample_data(type):
    git clone https://github.com/khoj-ai/khoj && cd khoj
    conda env create -f environment.yml
    conda activate khoj
-   #+end_src"""
+   #+end_src""",
         },
         "markdown": {
             "readme.markdown": """

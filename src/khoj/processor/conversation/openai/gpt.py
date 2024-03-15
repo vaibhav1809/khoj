@@ -1,14 +1,10 @@
-# Standard Packages
-import logging
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
-# External Packages
 from langchain.schema import ChatMessage
 
-# Internal Packages
-from khoj.utils.constants import empty_escape_sequences
 from khoj.processor.conversation import prompts
 from khoj.processor.conversation.openai.utils import (
     chat_completion_with_backoff,
@@ -16,32 +12,31 @@ from khoj.processor.conversation.openai.utils import (
 )
 from khoj.processor.conversation.utils import generate_chatml_messages_with_context
 from khoj.utils.helpers import ConversationCommand, is_none_or_empty
-
+from khoj.utils.rawconfig import LocationData
 
 logger = logging.getLogger(__name__)
 
 
 def extract_questions(
     text,
-    model: Optional[str] = "gpt-4",
+    model: Optional[str] = "gpt-4-turbo-preview",
     conversation_log={},
     api_key=None,
     temperature=0,
     max_tokens=100,
+    location_data: LocationData = None,
 ):
     """
     Infer search queries to retrieve relevant notes to answer user query
     """
-
-    def _valid_question(question: str):
-        return not is_none_or_empty(question) and question != "[]"
+    location = f"{location_data.city}, {location_data.region}, {location_data.country}" if location_data else "Unknown"
 
     # Extract Past User Message and Inferred Questions from Conversation Log
     chat_history = "".join(
         [
-            f'Q: {chat["intent"]["query"]}\n\n{chat["intent"].get("inferred-queries") or list([chat["intent"]["query"]])}\n\n{chat["message"]}\n\n'
+            f'Q: {chat["intent"]["query"]}\nKhoj: {{"queries": {chat["intent"].get("inferred-queries") or list([chat["intent"]["query"]])}}}\nA: {chat["message"]}\n\n'
             for chat in conversation_log.get("chat", [])[-4:]
-            if chat["by"] == "khoj"
+            if chat["by"] == "khoj" and "text-to-image" not in chat["intent"].get("type")
         ]
     )
 
@@ -60,6 +55,7 @@ def extract_questions(
         chat_history=chat_history,
         text=text,
         yesterday_date=(today - timedelta(days=1)).strftime("%Y-%m-%d"),
+        location=location,
     )
     messages = [ChatMessage(content=prompt, role="assistant")]
 
@@ -69,29 +65,19 @@ def extract_questions(
         model_name=model,
         temperature=temperature,
         max_tokens=max_tokens,
-        model_kwargs={"stop": ["A: ", "\n"]},
+        model_kwargs={"stop": ["A: ", "\n"], "response_format": {"type": "json_object"}},
         openai_api_key=api_key,
     )
 
     # Extract, Clean Message from GPT's Response
     try:
-        split_questions = (
-            response.content.strip(empty_escape_sequences)
-            .replace("['", '["')
-            .replace("']", '"]')
-            .replace("', '", '", "')
-            .replace('["', "")
-            .replace('"]', "")
-            .split('", "')
-        )
-        questions = []
-
-        for question in split_questions:
-            if question not in questions and _valid_question(question):
-                questions.append(question)
-
-        if is_none_or_empty(questions):
-            raise ValueError("GPT returned empty JSON")
+        response = response.strip()
+        response = json.loads(response)
+        response = [q.strip() for q in response["queries"] if q.strip()]
+        if not isinstance(response, list) or not response:
+            logger.error(f"Invalid response for constructing subqueries: {response}")
+            return [text]
+        return response
     except:
         logger.warning(f"GPT returned invalid JSON. Falling back to using user message as search query.\n{response}")
         questions = [text]
@@ -100,17 +86,34 @@ def extract_questions(
     return questions
 
 
+def send_message_to_model(messages, api_key, model, response_type="text"):
+    """
+    Send message to model
+    """
+
+    # Get Response from GPT
+    return completion_with_backoff(
+        messages=messages,
+        model=model,
+        openai_api_key=api_key,
+        model_kwargs={"response_format": {"type": response_type}},
+    )
+
+
 def converse(
     references,
     user_query,
+    online_results: Optional[dict] = None,
     conversation_log={},
     model: str = "gpt-3.5-turbo",
     api_key: Optional[str] = None,
     temperature: float = 0.2,
     completion_func=None,
-    conversation_command=ConversationCommand.Default,
+    conversation_commands=[ConversationCommand.Default],
     max_prompt_size=None,
     tokenizer_name=None,
+    location_data: LocationData = None,
+    user_name: str = None,
 ):
     """
     Converse with user using OpenAI's ChatGPT
@@ -119,14 +122,31 @@ def converse(
     current_date = datetime.now().strftime("%Y-%m-%d")
     compiled_references = "\n\n".join({f"# {item}" for item in references})
 
+    conversation_primer = prompts.query_prompt.format(query=user_query)
+
+    if location_data:
+        location = f"{location_data.city}, {location_data.region}, {location_data.country}"
+        location_prompt = prompts.user_location.format(location=location)
+        conversation_primer = f"{location_prompt}\n{conversation_primer}"
+
+    if user_name:
+        user_name_prompt = prompts.user_name.format(name=user_name)
+        conversation_primer = f"{user_name_prompt}\n{conversation_primer}"
+
     # Get Conversation Primer appropriate to Conversation Type
-    if conversation_command == ConversationCommand.Notes and is_none_or_empty(compiled_references):
+    if conversation_commands == [ConversationCommand.Notes] and is_none_or_empty(compiled_references):
         completion_func(chat_response=prompts.no_notes_found.format())
         return iter([prompts.no_notes_found.format()])
-    elif conversation_command == ConversationCommand.General or is_none_or_empty(compiled_references):
-        conversation_primer = prompts.general_conversation.format(query=user_query)
-    else:
-        conversation_primer = prompts.notes_conversation.format(query=user_query, references=compiled_references)
+    elif conversation_commands == [ConversationCommand.Online] and is_none_or_empty(online_results):
+        completion_func(chat_response=prompts.no_online_results_found.format())
+        return iter([prompts.no_online_results_found.format()])
+
+    if ConversationCommand.Online in conversation_commands:
+        conversation_primer = (
+            f"{prompts.online_search_conversation.format(online_results=str(online_results))}\n{conversation_primer}"
+        )
+    if not is_none_or_empty(compiled_references):
+        conversation_primer = f"{prompts.notes_conversation.format(query=user_query, references=compiled_references)}\n\n{conversation_primer}"
 
     # Setup Prompt with Primer or Conversation History
     messages = generate_chatml_messages_with_context(
@@ -144,6 +164,7 @@ def converse(
     return chat_completion_with_backoff(
         messages=messages,
         compiled_references=references,
+        online_results=online_results,
         model_name=model,
         temperature=temperature,
         openai_api_key=api_key,

@@ -3,12 +3,17 @@
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0 maximum-scale=1.0">
-        <link rel="icon" type="image/png" sizes="128x128" href="/static/assets/icons/favicon-128x128.png">
+        <link rel="icon" type="image/png" sizes="128x128" href="/static/assets/icons/favicon-128x128.png?v={{ khoj_version }}">
         <title>Khoj - Settings</title>
-        <link rel="stylesheet" href="/static/assets/pico.min.css">
-        <link rel="stylesheet" href="/static/assets/khoj.css">
+        <link rel="stylesheet" href="/static/assets/pico.min.css?v={{ khoj_version }}">
+        <link rel="stylesheet" href="/static/assets/khoj.css?v={{ khoj_version }}">
+        <script
+            integrity="sha384-05IkdNHoAlkhrFVUCCN805WC/h4mcI98GUBssmShF2VJAXKyZTrO/TmJ+4eBo0Cy"
+            crossorigin="anonymous"
+            src="https://cdnjs.cloudflare.com/ajax/libs/intl-tel-input/17.0.13/js/intlTelInput.min.js"></script>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/intl-tel-input/17.0.13/css/intlTelInput.css">
     </head>
-    <script type="text/javascript" src="/static/assets/utils.js"></script>
+    <script type="text/javascript" src="/static/assets/utils.js?v={{ khoj_version }}"></script>
     <body class="khoj-configure">
         <div class="khoj-header-wrapper">
             <div class="filler"></div>
@@ -80,13 +85,16 @@
         div.api-settings {
             grid-template-rows: 1fr 1fr auto;
         }
-
         #api-settings-card-description {
             margin: 8px 0 0 0;
         }
-
         #api-settings-keys-table {
             margin-bottom: 16px;
+        }
+
+        #phone-number-input-card {
+            grid-template-rows: auto;
+            gap: 20px;
         }
 
         div.instructions {
@@ -95,7 +103,7 @@
 
         .section-title {
             margin: 0;
-            padding: 0 0 16px 0;
+            padding: 12px 0 16px 0;
             font-size: 32;
             font-weight: normal;
         }
@@ -125,6 +133,12 @@
             width: 320px;
             border-radius: 4px;
             overflow: hidden;
+        }
+        div.finalize-buttons button {
+            background-color: var(--primary-hover);
+        }
+        div.finalize-buttons button:hover {
+            background-color: var(--summer-sun);
         }
         div#features-hint-text {
             width: 640px;
@@ -290,6 +304,21 @@
             height: 32px;
         }
 
+        div#notification-banner {
+            background-color: var(--primary);
+            border: 1px solid var(--primary-hover);
+            padding: 8px;
+            box-shadow: 0px 1px 3px 0px rgba(0,0,0,0.1),0px 1px 2px -1px rgba(0,0,0,0.8);
+        }
+
+        div#notification-banner-parent {
+            position: fixed;
+            right: 0;
+            bottom: 0;
+            margin: 20px;
+        }
+
+        select#search-models,
         select#chat-models {
             margin-bottom: 0;
             padding: 8px;
@@ -307,6 +336,34 @@
         a {
             color: #3b82f6;
             text-decoration: none;
+        }
+
+        div#phone-number-input-element {
+            display: flex;
+            align-items: center;
+        }
+
+        p#phone-number-plus {
+            padding: 8px;
+        }
+
+        div#clients {
+            grid-gap: 12px;
+        }
+
+        input#country-code-phone-number-input {
+            max-width: 100px;
+            margin-right: 8px;
+        }
+
+        input#country-code-phone-number-input {
+            max-width: 100px;
+            margin-right: 8px;
+        }
+
+        input#profile_given_name {
+            width: 100%;
+            margin: 0;
         }
 
         @media screen and (max-width: 700px) {

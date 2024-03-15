@@ -1,25 +1,25 @@
-# Standard Packages
-import logging
-from time import perf_counter
 import json
-from datetime import datetime
+import logging
 import queue
-import tiktoken
+from datetime import datetime
+from time import perf_counter
+from typing import Any, Dict, List
 
-# External packages
+import tiktoken
 from langchain.schema import ChatMessage
 from transformers import AutoTokenizer
 
-# Internal Packages
-from khoj.utils.helpers import merge_dicts
-
+from khoj.database.adapters import ConversationAdapters
+from khoj.database.models import ClientApplication, KhojUser
+from khoj.utils.helpers import is_none_or_empty, merge_dicts
 
 logger = logging.getLogger(__name__)
 model_to_prompt_size = {
-    "gpt-3.5-turbo": 4096,
-    "gpt-4": 8192,
+    "gpt-3.5-turbo": 3000,
+    "gpt-3.5-turbo-0125": 3000,
+    "gpt-4-0125-preview": 7000,
+    "gpt-4-turbo-preview": 7000,
     "llama-2-7b-chat.ggmlv3.q4_0.bin": 1548,
-    "gpt-3.5-turbo-16k": 15000,
     "mistral-7b-instruct-v0.1.Q4_0.gguf": 1548,
 }
 model_to_tokenizer = {
@@ -29,9 +29,10 @@ model_to_tokenizer = {
 
 
 class ThreadedGenerator:
-    def __init__(self, compiled_references, completion_func=None):
+    def __init__(self, compiled_references, online_results, completion_func=None):
         self.queue = queue.Queue()
         self.compiled_references = compiled_references
+        self.online_results = online_results
         self.completion_func = completion_func
         self.response = ""
         self.start_time = perf_counter()
@@ -54,7 +55,7 @@ class ThreadedGenerator:
     def send(self, data):
         if self.response == "":
             time_to_first_response = perf_counter() - self.start_time
-            logger.debug(f"First response took: {time_to_first_response:.3f} seconds")
+            logger.info(f"First response took: {time_to_first_response:.3f} seconds")
 
         self.response += data
         self.queue.put(data)
@@ -62,6 +63,8 @@ class ThreadedGenerator:
     def close(self):
         if self.compiled_references and len(self.compiled_references) > 0:
             self.queue.put(f"### compiled references:{json.dumps(self.compiled_references)}")
+        if self.online_results and len(self.online_results) > 0:
+            self.queue.put(f"### compiled references:{json.dumps(self.online_results)}")
         self.queue.put(StopIteration)
 
 
@@ -84,6 +87,49 @@ def message_to_log(
 
     conversation_log.extend([human_log, khoj_log])
     return conversation_log
+
+
+def save_to_conversation_log(
+    q: str,
+    chat_response: str,
+    user: KhojUser,
+    meta_log: Dict,
+    user_message_time: str = None,
+    compiled_references: List[str] = [],
+    online_results: Dict[str, Any] = {},
+    inferred_queries: List[str] = [],
+    intent_type: str = "remember",
+    client_application: ClientApplication = None,
+    conversation_id: int = None,
+):
+    user_message_time = user_message_time or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    updated_conversation = message_to_log(
+        user_message=q,
+        chat_response=chat_response,
+        user_message_metadata={"created": user_message_time},
+        khoj_message_metadata={
+            "context": compiled_references,
+            "intent": {"inferred-queries": inferred_queries, "type": intent_type},
+            "onlineContext": online_results,
+        },
+        conversation_log=meta_log.get("chat", []),
+    )
+    ConversationAdapters.save_conversation(
+        user,
+        {"chat": updated_conversation},
+        client_application=client_application,
+        conversation_id=conversation_id,
+        user_message=q,
+    )
+
+    logger.info(
+        f"""
+Saved Conversation Turn
+You ({user.username}): "{q}"
+
+Khoj: "{inferred_queries if ("text-to-image" in intent_type) else chat_response}"
+""".strip()
+    )
 
 
 def generate_chatml_messages_with_context(
@@ -121,10 +167,13 @@ def generate_chatml_messages_with_context(
         rest_backnforths += reciprocal_conversation_to_chatml([user_msg, assistant_msg])[::-1]
 
     # Format user and system messages to chatml format
-    system_chatml_message = [ChatMessage(content=system_message, role="system")]
-    user_chatml_message = [ChatMessage(content=user_message, role="user")]
-
-    messages = user_chatml_message + rest_backnforths + system_chatml_message
+    messages = []
+    if not is_none_or_empty(user_message):
+        messages.append(ChatMessage(content=user_message, role="user"))
+    if len(rest_backnforths) > 0:
+        messages += rest_backnforths
+    if not is_none_or_empty(system_message):
+        messages.append(ChatMessage(content=system_message, role="system"))
 
     # Truncate oldest messages from conversation history until under max supported prompt size by model
     messages = truncate_messages(messages, max_prompt_size, model_name, tokenizer_name)
@@ -165,6 +214,7 @@ def truncate_messages(
         assert type(system_message.content) == str
         current_message = "\n".join(messages[0].content.split("\n")[:-1]) if type(messages[0].content) == str else ""
         original_question = "\n".join(messages[0].content.split("\n")[-1:]) if type(messages[0].content) == str else ""
+        original_question = f"\n{original_question}"
         original_question_tokens = len(encoder.encode(original_question))
         remaining_tokens = max_prompt_size - original_question_tokens - system_message_tokens
         truncated_message = encoder.decode(encoder.encode(current_message)[:remaining_tokens]).strip()

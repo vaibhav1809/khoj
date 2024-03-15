@@ -1,19 +1,17 @@
 # System Packages
-import logging
-from pathlib import Path
-import os
 import asyncio
+import logging
+import os
+from pathlib import Path
 
-# External Packages
 import pytest
 
-# Internal Packages
+from khoj.database.models import Entry, GithubConfig, KhojUser, LocalOrgConfig
+from khoj.processor.content.github.github_to_entries import GithubToEntries
+from khoj.processor.content.org_mode.org_to_entries import OrgToEntries
 from khoj.search_type import text_search
-from khoj.utils.rawconfig import ContentConfig, SearchConfig
-from khoj.processor.org_mode.org_to_entries import OrgToEntries
-from khoj.processor.github.github_to_entries import GithubToEntries
 from khoj.utils.fs_syncer import collect_files, get_org_files
-from database.models import LocalOrgConfig, KhojUser, Entry, GithubConfig
+from khoj.utils.rawconfig import ContentConfig, SearchConfig
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +68,7 @@ def test_text_search_setup_with_empty_file_creates_no_entries(
         text_search.setup(OrgToEntries, data, regenerate=True, user=default_user)
 
     # Assert
-    assert "Deleted 3 entries. Created 0 new entries for user " in caplog.records[-1].message
+    assert "Deleted 8 entries. Created 0 new entries for user " in caplog.records[-1].message
     verify_embeddings(0, default_user)
 
 
@@ -90,7 +88,7 @@ def test_text_indexer_deletes_embedding_before_regenerate(
 
     # Assert
     assert "Deleting all entries for file type org" in caplog.text
-    assert "Deleted 3 entries. Created 10 new entries for user " in caplog.records[-1].message
+    assert "Deleted 8 entries. Created 13 new entries for user " in caplog.records[-1].message
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -106,7 +104,7 @@ def test_text_search_setup_batch_processes(content_config: ContentConfig, defaul
         text_search.setup(OrgToEntries, data, regenerate=True, user=default_user)
 
     # Assert
-    assert "Deleted 3 entries. Created 10 new entries for user " in caplog.records[-1].message
+    assert "Deleted 8 entries. Created 13 new entries for user " in caplog.records[-1].message
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -161,7 +159,7 @@ async def test_text_search(search_config: SearchConfig):
         default_user,
     )
 
-    query = "How to git install application?"
+    query = "Load Khoj on Emacs?"
 
     # Act
     hits = await text_search.query(default_user, query)
@@ -170,7 +168,7 @@ async def test_text_search(search_config: SearchConfig):
 
     # Assert
     search_result = results[0].entry
-    assert "git clone" in search_result, 'search result did not contain "git clone" entry'
+    assert "Emacs load path" in search_result, 'Expected "Emacs load path" in entry'
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -284,9 +282,9 @@ def test_regenerate_index_with_new_entry(
     final_logs = caplog.text
 
     # Assert
-    assert "Deleted 3 entries. Created 10 new entries for user " in initial_logs
-    assert "Deleted 10 entries. Created 11 new entries for user " in final_logs
-    verify_embeddings(11, default_user)
+    assert "Deleted 8 entries. Created 13 new entries for user " in initial_logs
+    assert "Deleted 13 entries. Created 14 new entries for user " in final_logs
+    verify_embeddings(14, default_user)
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -320,7 +318,7 @@ def test_update_index_with_duplicate_entries_in_stable_order(
 
     # Assert
     # verify only 1 entry added even if there are multiple duplicate entries
-    assert "Deleted 3 entries. Created 1 new entries for user " in initial_logs
+    assert "Deleted 8 entries. Created 1 new entries for user " in initial_logs
     assert "Deleted 0 entries. Created 0 new entries for user " in final_logs
 
     verify_embeddings(1, default_user)
@@ -357,7 +355,7 @@ def test_update_index_with_deleted_entry(org_config_with_only_new_file: LocalOrg
 
     # Assert
     # verify only 1 entry added even if there are multiple duplicate entries
-    assert "Deleted 3 entries. Created 2 new entries for user " in initial_logs
+    assert "Deleted 8 entries. Created 2 new entries for user " in initial_logs
     assert "Deleted 1 entries. Created 0 new entries for user " in final_logs
 
     verify_embeddings(1, default_user)
@@ -388,9 +386,9 @@ def test_update_index_with_new_entry(content_config: ContentConfig, new_org_file
     final_logs = caplog.text
 
     # Assert
-    assert "Deleted 3 entries. Created 10 new entries for user " in initial_logs
+    assert "Deleted 8 entries. Created 13 new entries for user " in initial_logs
     assert "Deleted 0 entries. Created 1 new entries for user " in final_logs
-    verify_embeddings(11, default_user)
+    verify_embeddings(14, default_user)
 
 
 # ----------------------------------------------------------------------------------------------------

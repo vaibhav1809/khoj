@@ -1,40 +1,25 @@
-# Standard Packages
-import logging
-from typing import Optional, Union, Dict
 import asyncio
+import logging
+from typing import Dict, Optional, Union
 
-# External Packages
-from fastapi import APIRouter, Header, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, Header, Request, Response, UploadFile
 from pydantic import BaseModel
 from starlette.authentication import requires
 
-# Internal Packages
-from khoj.utils import state, constants
-from khoj.processor.markdown.markdown_to_entries import MarkdownToEntries
-from khoj.processor.org_mode.org_to_entries import OrgToEntries
-from khoj.processor.pdf.pdf_to_entries import PdfToEntries
-from khoj.processor.github.github_to_entries import GithubToEntries
-from khoj.processor.notion.notion_to_entries import NotionToEntries
-from khoj.processor.plaintext.plaintext_to_entries import PlaintextToEntries
-from khoj.search_type import text_search, image_search
-from khoj.routers.helpers import update_telemetry_state
-from khoj.utils.yaml import save_config_to_file_updated_state
-from khoj.utils.config import SearchModels
+from khoj.database.models import GithubConfig, KhojUser, NotionConfig
+from khoj.processor.content.github.github_to_entries import GithubToEntries
+from khoj.processor.content.markdown.markdown_to_entries import MarkdownToEntries
+from khoj.processor.content.notion.notion_to_entries import NotionToEntries
+from khoj.processor.content.org_mode.org_to_entries import OrgToEntries
+from khoj.processor.content.pdf.pdf_to_entries import PdfToEntries
+from khoj.processor.content.plaintext.plaintext_to_entries import PlaintextToEntries
+from khoj.routers.helpers import ApiIndexedDataLimiter, update_telemetry_state
+from khoj.search_type import image_search, text_search
+from khoj.utils import constants, state
+from khoj.utils.config import ContentIndex, SearchModels
 from khoj.utils.helpers import LRU, get_file_type
-from khoj.utils.rawconfig import (
-    ContentConfig,
-    FullConfig,
-    SearchConfig,
-)
-from khoj.utils.config import (
-    ContentIndex,
-    SearchModels,
-)
-from database.models import (
-    KhojUser,
-    GithubConfig,
-    NotionConfig,
-)
+from khoj.utils.rawconfig import ContentConfig, FullConfig, SearchConfig
+from khoj.utils.yaml import save_config_to_file_updated_state
 
 logger = logging.getLogger(__name__)
 
@@ -68,46 +53,40 @@ async def update(
     user_agent: Optional[str] = Header(None),
     referer: Optional[str] = Header(None),
     host: Optional[str] = Header(None),
+    indexed_data_limiter: ApiIndexedDataLimiter = Depends(
+        ApiIndexedDataLimiter(
+            incoming_entries_size_limit=10,
+            subscribed_incoming_entries_size_limit=25,
+            total_entries_size_limit=10,
+            subscribed_total_entries_size_limit=100,
+        )
+    ),
 ):
     user = request.user.object
+    index_files: Dict[str, Dict[str, str]] = {"org": {}, "markdown": {}, "pdf": {}, "plaintext": {}}
     try:
         logger.info(f"📬 Updating content index via API call by {client} client")
-        org_files: Dict[str, str] = {}
-        markdown_files: Dict[str, str] = {}
-        pdf_files: Dict[str, bytes] = {}
-        plaintext_files: Dict[str, str] = {}
-
         for file in files:
             file_type, encoding = get_file_type(file.content_type)
-            dict_to_update = None
-            if file_type == "org":
-                dict_to_update = org_files
-            elif file_type == "markdown":
-                dict_to_update = markdown_files
-            elif file_type == "pdf":
-                dict_to_update = pdf_files  # type: ignore
-            elif file_type == "plaintext":
-                dict_to_update = plaintext_files
-
-            if dict_to_update is not None:
-                dict_to_update[file.filename] = (
+            if file_type in index_files:
+                index_files[file_type][file.filename] = (
                     file.file.read().decode("utf-8") if encoding == "utf-8" else file.file.read()  # type: ignore
                 )
             else:
                 logger.warning(f"Skipped indexing unsupported file type sent by {client} client: {file.filename}")
 
         indexer_input = IndexerInput(
-            org=org_files,
-            markdown=markdown_files,
-            pdf=pdf_files,
-            plaintext=plaintext_files,
+            org=index_files["org"],
+            markdown=index_files["markdown"],
+            pdf=index_files["pdf"],
+            plaintext=index_files["plaintext"],
         )
 
         if state.config == None:
             logger.info("📬 Initializing content index on first run.")
             default_full_config = FullConfig(
                 content_type=None,
-                search_type=SearchConfig.parse_obj(constants.default_config["search-type"]),
+                search_type=SearchConfig.model_validate(constants.default_config["search-type"]),
                 processor=None,
             )
             state.config = default_full_config
@@ -131,7 +110,7 @@ async def update(
             configure_content,
             state.content_index,
             state.config.content_type,
-            indexer_input.dict(),
+            indexer_input.model_dump(),
             state.search_models,
             force,
             t,
@@ -149,6 +128,13 @@ async def update(
         )
         return Response(content="Failed", status_code=500)
 
+    indexing_metadata = {
+        "num_org": len(index_files["org"]),
+        "num_markdown": len(index_files["markdown"]),
+        "num_pdf": len(index_files["pdf"]),
+        "num_plaintext": len(index_files["plaintext"]),
+    }
+
     update_telemetry_state(
         request=request,
         telemetry_type="api",
@@ -157,11 +143,13 @@ async def update(
         user_agent=user_agent,
         referer=referer,
         host=host,
+        metadata=indexing_metadata,
     )
 
     logger.info(f"📪 Content index updated via API call by {client} client")
 
-    return Response(content="OK", status_code=200)
+    indexed_filenames = ",".join(file for ctype in index_files for file in index_files[ctype]) or ""
+    return Response(content=indexed_filenames, status_code=200)
 
 
 def configure_search(search_models: SearchModels, search_config: Optional[SearchConfig]) -> Optional[SearchModels]:
@@ -189,6 +177,9 @@ def configure_content(
     content_index = ContentIndex()
 
     success = True
+    if t == None:
+        t = state.SearchType.All
+
     if t is not None and t in [type.value for type in state.SearchType]:
         t = state.SearchType(t)
 
@@ -197,6 +188,8 @@ def configure_content(
         return None, False
 
     search_type = t.value if t else None
+
+    no_documents = all([not files.get(file_type) for file_type in files])
 
     if files is None:
         logger.warning(f"🚨 No files to process for {search_type} search.")
@@ -292,43 +285,45 @@ def configure_content(
         success = False
 
     try:
-        github_config = GithubConfig.objects.filter(user=user).prefetch_related("githubrepoconfig").first()
-        if (
-            search_type == state.SearchType.All.value or search_type == state.SearchType.Github.value
-        ) and github_config is not None:
-            logger.info("🐙 Setting up search for github")
-            # Extract Entries, Generate Github Embeddings
-            text_search.setup(
-                GithubToEntries,
-                None,
-                regenerate=regenerate,
-                full_corpus=full_corpus,
-                user=user,
-                config=github_config,
-            )
+        if no_documents:
+            github_config = GithubConfig.objects.filter(user=user).prefetch_related("githubrepoconfig").first()
+            if (
+                search_type == state.SearchType.All.value or search_type == state.SearchType.Github.value
+            ) and github_config is not None:
+                logger.info("🐙 Setting up search for github")
+                # Extract Entries, Generate Github Embeddings
+                text_search.setup(
+                    GithubToEntries,
+                    None,
+                    regenerate=regenerate,
+                    full_corpus=full_corpus,
+                    user=user,
+                    config=github_config,
+                )
 
     except Exception as e:
         logger.error(f"🚨 Failed to setup GitHub: {e}", exc_info=True)
         success = False
 
     try:
-        # Initialize Notion Search
-        notion_config = NotionConfig.objects.filter(user=user).first()
-        if (
-            search_type == state.SearchType.All.value or search_type in state.SearchType.Notion.value
-        ) and notion_config:
-            logger.info("🔌 Setting up search for notion")
-            text_search.setup(
-                NotionToEntries,
-                None,
-                regenerate=regenerate,
-                full_corpus=full_corpus,
-                user=user,
-                config=notion_config,
-            )
+        if no_documents:
+            # Initialize Notion Search
+            notion_config = NotionConfig.objects.filter(user=user).first()
+            if (
+                search_type == state.SearchType.All.value or search_type == state.SearchType.Notion.value
+            ) and notion_config:
+                logger.info("🔌 Setting up search for notion")
+                text_search.setup(
+                    NotionToEntries,
+                    None,
+                    regenerate=regenerate,
+                    full_corpus=full_corpus,
+                    user=user,
+                    config=notion_config,
+                )
 
     except Exception as e:
-        logger.error(f"🚨 Failed to setup GitHub: {e}", exc_info=True)
+        logger.error(f"🚨 Failed to setup Notion: {e}", exc_info=True)
         success = False
 
     # Invalidate Query Cache
@@ -344,7 +339,7 @@ def load_content(
     search_models: SearchModels,
 ):
     if content_config is None:
-        logger.warning("🚨 No Content configuration available.")
+        logger.debug("🚨 No Content configuration available.")
         return None
     if content_index is None:
         content_index = ContentIndex()

@@ -1,4 +1,10 @@
-# Standard Packages
+""" Main module for Khoj Assistant
+   isort:skip_file
+"""
+
+
+from contextlib import redirect_stdout
+import io
 import os
 import sys
 import locale
@@ -8,11 +14,13 @@ import threading
 import warnings
 from importlib.metadata import version
 
+from khoj.utils.helpers import in_debug_mode
+
 # Ignore non-actionable warnings
 warnings.filterwarnings("ignore", message=r"snapshot_download.py has been made private", category=FutureWarning)
 warnings.filterwarnings("ignore", message=r"legacy way to download files from the HF hub,", category=FutureWarning)
 
-# External Packages
+
 import uvicorn
 import django
 from fastapi import FastAPI
@@ -25,25 +33,41 @@ from django.core.asgi import get_asgi_application
 from django.core.management import call_command
 
 # Initialize Django
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "app.settings")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "khoj.app.settings")
 django.setup()
 
 # Initialize Django Database
-call_command("migrate", "--noinput")
+db_migrate_output = io.StringIO()
+with redirect_stdout(db_migrate_output):
+    call_command("migrate", "--noinput")
 
 # Initialize Django Static Files
-call_command("collectstatic", "--noinput")
+collectstatic_output = io.StringIO()
+with redirect_stdout(collectstatic_output):
+    call_command("collectstatic", "--noinput")
 
 # Initialize the Application Server
-app = FastAPI()
+if in_debug_mode():
+    app = FastAPI(debug=True)
+else:
+    app = FastAPI(docs_url=None)  # Disable Swagger UI in production
 
 # Get Django Application
 django_app = get_asgi_application()
 
 # Add CORS middleware
+KHOJ_DOMAIN = os.getenv("KHOJ_DOMAIN", "app.khoj.dev")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["app://obsidian.md", "http://localhost:*", "https://app.khoj.dev/*", "app://khoj.dev"],
+    allow_origins=[
+        "app://obsidian.md",
+        "capacitor://localhost",  # To allow access from Obsidian iOS app using Capacitor.JS
+        "http://localhost",  # To allow access from Obsidian Android app
+        "http://localhost:*",
+        "http://127.0.0.1:*",
+        f"https://{KHOJ_DOMAIN}",
+        "app://khoj.dev",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -52,7 +76,7 @@ app.add_middleware(
 # Set Locale
 locale.setlocale(locale.LC_ALL, "")
 
-# Internal Packages. We do this after setting up Django so that Django features are accessible to the app.
+# We import these packages after setting up Django so that Django features are accessible to the app.
 from khoj.configure import configure_routes, initialize_server, configure_middleware
 from khoj.utils import state
 from khoj.utils.cli import cli
@@ -60,7 +84,7 @@ from khoj.utils.initialization import initialization
 
 # Setup Logger
 rich_handler = RichHandler(rich_tracebacks=True)
-rich_handler.setFormatter(fmt=logging.Formatter(fmt="%(message)s", datefmt="[%X]"))
+rich_handler.setFormatter(fmt=logging.Formatter(fmt="%(message)s", datefmt="[%H:%M:%S.%f]"))
 logging.basicConfig(handlers=[rich_handler])
 
 logger = logging.getLogger("khoj")
@@ -75,13 +99,15 @@ def run(should_start_server=True):
     args = cli(state.cli_args)
     set_state(args)
 
-    logger.info(f"🚒 Initializing Khoj v{state.khoj_version}")
-
     # Set Logging Level
     if args.verbose == 0:
         logger.setLevel(logging.INFO)
     elif args.verbose >= 1:
         logger.setLevel(logging.DEBUG)
+
+    logger.info(f"🚒 Initializing Khoj v{state.khoj_version}")
+    logger.info(f"📦 Initializing DB:\n{db_migrate_output.getvalue().strip()}")
+    logger.debug(f"🌍 Initializing Web Client:\n{collectstatic_output.getvalue().strip()}")
 
     initialization()
 
@@ -103,10 +129,10 @@ def run(should_start_server=True):
 
     #  Mount Django and Static Files
     app.mount("/server", django_app, name="server")
-    static_dir = "static"
+    static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
     if not os.path.exists(static_dir):
         os.mkdir(static_dir)
-    app.mount(f"/{static_dir}", StaticFiles(directory=static_dir), name=static_dir)
+    app.mount(f"/static", StaticFiles(directory=static_dir), name=static_dir)
 
     # Configure Middleware
     configure_middleware(app)

@@ -1,24 +1,21 @@
 # System Packages
 from __future__ import annotations  # to avoid quoting type hints
 
-from enum import Enum
 import logging
-
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, Optional, Union, Any
+from enum import Enum
+from typing import TYPE_CHECKING, Any, List, Optional, Union
 
-# External Packages
 import torch
 
-# Internal Packages
-from khoj.processor.conversation.gpt4all.utils import download_model
-
+from khoj.processor.conversation.offline.utils import download_model
 
 logger = logging.getLogger(__name__)
 
-# Internal Packages
+
 if TYPE_CHECKING:
     from sentence_transformers import CrossEncoder
+
     from khoj.utils.models import BaseEncoder
 
 
@@ -80,7 +77,7 @@ class GPT4AllProcessorConfig:
 class GPT4AllProcessorModel:
     def __init__(
         self,
-        chat_model: str = "llama-2-7b-chat.ggmlv3.q4_0.bin",
+        chat_model: str = "mistral-7b-instruct-v0.1.Q4_0.gguf",
     ):
         self.chat_model = chat_model
         self.loaded_model = None

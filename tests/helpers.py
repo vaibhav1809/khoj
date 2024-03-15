@@ -1,16 +1,19 @@
-import factory
 import os
+from datetime import datetime
 
-from database.models import (
-    KhojUser,
-    KhojApiUser,
+import factory
+from django.utils.timezone import make_aware
+
+from khoj.database.models import (
     ChatModelOptions,
+    Conversation,
+    KhojApiUser,
+    KhojUser,
     OfflineChatProcessorConversationConfig,
     OpenAIProcessorConversationConfig,
     SearchModelConfig,
-    UserConversationConfig,
-    Conversation,
     Subscription,
+    UserConversationConfig,
 )
 
 
@@ -89,4 +92,4 @@ class SubscriptionFactory(factory.django.DjangoModelFactory):
     user = factory.SubFactory(UserFactory)
     type = "standard"
     is_recurring = False
-    renewal_date = "2100-04-01"
+    renewal_date = make_aware(datetime.strptime("2100-04-01", "%Y-%m-%d"))

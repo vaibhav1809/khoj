@@ -1,6 +1,5 @@
 const setFolderButton = document.getElementById('update-folder');
 const setFileButton = document.getElementById('update-file');
-const showKey = document.getElementById('show-key');
 const loadingBar = document.getElementById('loading-bar');
 
 async function removeFile(filePath) {
@@ -158,11 +157,19 @@ window.updateStateAPI.onUpdateState((event, state) => {
     nextSyncTime = new Date();
     nextSyncTime.setMinutes(Math.ceil((nextSyncTime.getMinutes() + 1) / 10) * 10);
     if (state.completed == false) {
-        syncStatusElement.innerHTML = `Sync was unsuccessful at ${currentTime.toLocaleTimeString()}. Contact team@khoj.dev to report this issue.`;
+        if (state.error) syncStatusElement.innerHTML = state.error;
         return;
     }
     const options = { hour: '2-digit', minute: '2-digit' };
     syncStatusElement.innerHTML = `⏱️ Synced at ${currentTime.toLocaleTimeString(undefined, options)}. Next sync at ${nextSyncTime.toLocaleTimeString(undefined, options)}.`;
+});
+
+window.needsSubscriptionAPI.onNeedsSubscription((event, needsSubscription) => {
+    console.log("needs subscription", needsSubscription);
+    if (needsSubscription) {
+        window.alert("Looks like you're out of space to sync your files. Upgrade your plan to unlock more space here: https://app.khoj.dev/config");
+        needsSubscriptionElement.style.display = 'block';
+    }
 });
 
 const urlInput = document.getElementById('khoj-host-url');

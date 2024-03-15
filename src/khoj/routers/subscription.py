@@ -1,20 +1,19 @@
-# Standard Packages
-from datetime import datetime, timezone
 import logging
 import os
+from datetime import datetime, timezone
 
-# External Packages
 from asgiref.sync import sync_to_async
 from fastapi import APIRouter, Request
 from starlette.authentication import requires
-import stripe
 
-# Internal Packages
-from database import adapters
-
+from khoj.database import adapters
+from khoj.utils import state
 
 # Stripe integration for Khoj Cloud Subscription
-stripe.api_key = os.getenv("STRIPE_API_KEY")
+if state.billing_enabled:
+    import stripe
+
+    stripe.api_key = os.getenv("STRIPE_API_KEY")
 endpoint_secret = os.getenv("STRIPE_SIGNING_SECRET")
 logger = logging.getLogger(__name__)
 subscription_router = APIRouter()
@@ -41,7 +40,7 @@ async def subscribe(request: Request):
         "customer.subscription.updated",
         "customer.subscription.deleted",
     }:
-        logger.warn(f"Unhandled Stripe event type: {event['type']}")
+        logger.warning(f"Unhandled Stripe event type: {event['type']}")
         return {"success": False}
 
     # Retrieve the customer's details
@@ -73,7 +72,7 @@ async def subscribe(request: Request):
         )
         success = user is not None
 
-    logger.info(f'Stripe subscription {event["type"]} for {customer["email"]}')
+    logger.info(f'Stripe subscription {event["type"]} for {customer_email}')
     return {"success": success}
 
 

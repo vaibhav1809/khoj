@@ -1,32 +1,29 @@
-# Standard Packages
 from __future__ import annotations  # to avoid quoting type hints
-from collections import OrderedDict
+
 import datetime
+import logging
+import os
+import platform
+import random
+import uuid
+from collections import OrderedDict
 from enum import Enum
 from importlib import import_module
 from importlib.metadata import version
 from itertools import islice
-import logging
 from os import path
-import os
 from pathlib import Path
-import platform
-import random
 from time import perf_counter
+from typing import TYPE_CHECKING, Optional, Union
+
 import torch
-from typing import Optional, Union, TYPE_CHECKING
-import uuid
 from asgiref.sync import sync_to_async
 
-# Internal Packages
 from khoj.utils import constants
 
-
 if TYPE_CHECKING:
-    # External Packages
-    from sentence_transformers import SentenceTransformer, CrossEncoder
+    from sentence_transformers import CrossEncoder, SentenceTransformer
 
-    # Internal Packages
     from khoj.utils.models import BaseEncoder
     from khoj.utils.rawconfig import AppConfig
 
@@ -272,13 +269,29 @@ class ConversationCommand(str, Enum):
     General = "general"
     Notes = "notes"
     Help = "help"
+    Online = "online"
+    Image = "image"
 
 
 command_descriptions = {
     ConversationCommand.General: "Only talk about information that relies on Khoj's general knowledge, not your personal knowledge base.",
     ConversationCommand.Notes: "Only talk about information that is available in your knowledge base.",
     ConversationCommand.Default: "The default command when no command specified. It intelligently auto-switches between general and notes mode.",
+    ConversationCommand.Online: "Search for information on the internet.",
+    ConversationCommand.Image: "Generate images by describing your imagination in words.",
     ConversationCommand.Help: "Display a help message with all available commands and other metadata.",
+}
+
+tool_descriptions_for_llm = {
+    ConversationCommand.Default: "To use a mix of your internal knowledge and the user's personal knowledge, or if you don't entirely understand the query.",
+    ConversationCommand.General: "Use this when you can answer the question without any outside information or personal knowledge",
+    ConversationCommand.Notes: "To search the user's personal knowledge base. Especially helpful if the question expects context from the user's notes or documents.",
+    ConversationCommand.Online: "To search for the latest, up-to-date information from the internet. Note: **Questions about Khoj should always use this data source**",
+}
+
+mode_descriptions_for_llm = {
+    ConversationCommand.Image: "Use this if you think the user is requesting an image or visual response to their query.",
+    ConversationCommand.Default: "Use this if the other response modes don't seem to fit the query.",
 }
 
 
@@ -286,15 +299,15 @@ def generate_random_name():
     # List of adjectives and nouns to choose from
     adjectives = [
         "happy",
-        "irritated",
-        "annoyed",
+        "serendipitous",
+        "exuberant",
         "calm",
         "brave",
         "scared",
         "energetic",
         "chivalrous",
         "kind",
-        "grumpy",
+        "suave",
     ]
     nouns = ["dog", "cat", "falcon", "whale", "turtle", "rabbit", "hamster", "snake", "spider", "elephant"]
 
@@ -316,3 +329,14 @@ def batcher(iterable, max_n):
         if not chunk:
             return
         yield (x for x in chunk if x is not None)
+
+
+def is_env_var_true(env_var: str, default: str = "false") -> bool:
+    """Get state of boolean environment variable"""
+    return os.getenv(env_var, default).lower() == "true"
+
+
+def in_debug_mode():
+    """Check if Khoj is running in debug mode.
+    Set KHOJ_DEBUG environment variable to true to enable debug mode."""
+    return is_env_var_true("KHOJ_DEBUG")

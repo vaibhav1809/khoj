@@ -1,13 +1,11 @@
 # System Packages
 import json
-from pathlib import Path
-from typing import List, Dict, Optional
 import uuid
+from pathlib import Path
+from typing import Dict, List, Optional
 
-# External Packages
 from pydantic import BaseModel
 
-# Internal Packages
 from khoj.utils.helpers import to_snake_case_from_dash
 
 
@@ -21,6 +19,12 @@ class ConfigBase(BaseModel):
 
     def __setitem__(self, key, value):
         return setattr(self, key, value)
+
+
+class LocationData(BaseModel):
+    city: Optional[str]
+    region: Optional[str]
+    country: Optional[str]
 
 
 class TextConfigBase(ConfigBase):
@@ -71,6 +75,9 @@ class ImageSearchConfig(ConfigBase):
     encoder: str
     encoder_type: Optional[str] = None
     model_directory: Optional[Path] = None
+
+    class Config:
+        protected_namespaces = ()
 
 
 class SearchConfig(ConfigBase):

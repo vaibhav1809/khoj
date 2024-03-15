@@ -6,7 +6,7 @@
 ;;         Saba Imran <saba@khoj.dev>
 ;; Description: An AI copilot for your Second Brain
 ;; Keywords: search, chat, org-mode, outlines, markdown, pdf, image
-;; Version: 0.14.0
+;; Version: 1.7.0
 ;; Package-Requires: ((emacs "27.1") (transient "0.3.0") (dash "2.19.1"))
 ;; URL: https://github.com/khoj-ai/khoj/tree/master/src/interface/emacs
 
@@ -63,7 +63,7 @@
 ;; Khoj Static Configuration
 ;; -------------------------
 
-(defcustom khoj-server-url "http://localhost:42110"
+(defcustom khoj-server-url "https://app.khoj.dev"
   "Location of Khoj API server."
   :group 'khoj
   :type 'string)
@@ -94,9 +94,14 @@
   :type 'number)
 
 (defcustom khoj-api-key nil
-  "API Key to Khoj server."
+  "API Key to your Khoj. Default at https://app.khoj.dev/config#clients."
   :group 'khoj
   :type 'string)
+
+(defcustom khoj-auto-index t
+  "Should content be automatically re-indexed every `khoj-index-interval' seconds."
+  :group 'khoj
+  :type 'boolean)
 
 (defcustom khoj-index-interval 3600
   "Interval (in seconds) to wait before updating content index."
@@ -236,13 +241,26 @@ for example), set this to the full interpreter path."
           (member val '("python" "python3" "pythonw" "py")))
   :group 'khoj)
 
-(defcustom khoj-org-files (org-agenda-files t t)
+(defcustom khoj-org-files nil
   "List of org-files to index on khoj server."
   :type '(repeat string)
   :group 'khoj)
 
 (defcustom khoj-org-directories nil
   "List of directories with `org-mode' files to index on khoj server."
+  :type '(repeat string)
+  :group 'khoj)
+
+(make-obsolete-variable 'khoj-org-directories 'khoj-index-directories "1.2.0" 'set)
+(make-obsolete-variable 'khoj-org-files 'khoj-index-files "1.2.0" 'set)
+
+(defcustom khoj-index-files (org-agenda-files t t)
+  "List of org, markdown, pdf and other plaintext to index on khoj server."
+  :type '(repeat string)
+  :group 'khoj)
+
+(defcustom khoj-index-directories nil
+  "List of directories with org, markdown, pdf and other plaintext files to index on khoj server."
   :type '(repeat string)
   :group 'khoj)
 
@@ -330,7 +348,7 @@ Auto invokes setup steps on calling main entrypoint."
       t
     ;; else general check via ping to khoj-server-url
     (if (ignore-errors
-          (url-retrieve-synchronously (format "%s/api/config/data/default" khoj-server-url)))
+          (url-retrieve-synchronously (format "%s/api/health" khoj-server-url)))
         ;; Successful ping to non-emacs khoj server indicates it is started and ready.
         ;; So update ready state tracker variable (and implicitly return true for started)
         (setq khoj--server-ready? t)
@@ -390,12 +408,16 @@ Auto invokes setup steps on calling main entrypoint."
   "Send files at `FILE-PATHS' to the Khoj server to index for search and chat.
 `FORCE' re-indexes all files of `CONTENT-TYPE' even if they are already indexed."
   (interactive)
-  (let ((boundary (format "-------------------------%d" (random (expt 10 10))))
-        (files-to-index (or file-paths
-                            (append (mapcan (lambda (dir) (directory-files-recursively dir "\\.org$")) khoj-org-directories) khoj-org-files)))
-        (type-query (if (or (equal content-type "all") (not content-type)) "" (format "t=%s" content-type)))
-        (inhibit-message t)
-        (message-log-max nil))
+  (let* ((boundary (format "-------------------------%d" (random (expt 10 10))))
+         ;; Use `khoj-index-directories', `khoj-index-files' when set, else fallback to `khoj-org-directories', `khoj-org-files'
+         ;; This is a temporary change. `khoj-org-directories', `khoj-org-files' are deprecated. They will be removed in a future release
+         (content-directories (or khoj-index-directories khoj-org-directories))
+         (content-files (or khoj-index-files khoj-org-files))
+         (files-to-index (or file-paths
+                             (append (mapcan (lambda (dir) (directory-files-recursively dir "\\.\\(org\\|md\\|markdown\\|pdf\\|txt\\|rst\\|xml\\|htm\\|html\\)$")) content-directories) content-files)))
+         (type-query (if (or (equal content-type "all") (not content-type)) "" (format "t=%s" content-type)))
+         (inhibit-message t)
+         (message-log-max nil))
     (let ((url-request-method "POST")
           (url-request-data (khoj--render-files-as-request-body files-to-index khoj--indexed-files boundary))
           (url-request-extra-headers `(("content-type" . ,(format "multipart/form-data; boundary=%s" boundary))
@@ -404,15 +426,17 @@ Auto invokes setup steps on calling main entrypoint."
           (url-retrieve (format "%s/api/v1/index/update?%s&force=%s&client=emacs" khoj-server-url type-query (or force "false"))
                         ;; render response from indexing API endpoint on server
                         (lambda (status)
-                          (if (not status)
-                              (message "khoj.el: %scontent index %supdated" (if content-type (format "%s " content-type) "") (if force "force " ""))
-                            (with-current-buffer (current-buffer)
-                              (goto-char "\n\n")
-                              (message "khoj.el: Failed to %supdate %s content index. Status: %s. Response: %s"
-                                       (if force "force " "")
-                                       content-type
-                                       status
-                                       (string-trim (buffer-substring-no-properties (point) (point-max)))))))
+                          (if (not (plist-get status :error))
+                              (message "khoj.el: %scontent index %supdated" (if content-type (format "%s " content-type) "all ") (if force "force " ""))
+                            (progn
+                              (khoj--delete-open-network-connections-to-server)
+                              (with-current-buffer (current-buffer)
+                                (search-forward "\n\n" nil t)
+                                (message "khoj.el: Failed to %supdate %scontent index. Status: %s%s"
+                                         (if force "force " "")
+                                         (if content-type (format "%s " content-type) "all")
+                                         (string-trim (format "%s %s" (nth 1 (nth 1 status)) (nth 2 (nth 1 status))))
+                                         (if (> (- (point-max) (point)) 0) (format ". Response: %s" (string-trim (buffer-substring-no-properties (point) (point-max)))) ""))))))
                         nil t t)))
     (setq khoj--indexed-files files-to-index)))
 
@@ -423,20 +447,30 @@ Use `BOUNDARY' to separate files. This is sent to Khoj server as a POST request.
     (set-buffer-multibyte nil)
     (insert "\n")
     (dolist (file-to-index files-to-index)
+      ;; find file content-type. Choose from org, markdown, pdf, plaintext
+      (let ((content-type (cond ((string-match "\\.org$" file-to-index) "text/org")
+                                ((string-match "\\.\\(md\\|markdown\\)$" file-to-index) "text/markdown")
+                                ((string-match "\\.pdf$" file-to-index) "application/pdf")
+                                (t "text/plain"))))
       (insert (format "--%s\r\n" boundary))
       (insert (format "Content-Disposition: form-data; name=\"files\"; filename=\"%s\"\r\n" file-to-index))
-      (insert "Content-Type: text/org\r\n\r\n")
+      (insert (format "Content-Type: %s\r\n\r\n" content-type))
       (insert (with-temp-buffer
                 (insert-file-contents-literally file-to-index)
                 (buffer-string)))
-      (insert "\r\n"))
+      (insert "\r\n")))
     (dolist (file-to-index previously-indexed-files)
       (when (not (member file-to-index files-to-index))
-        (insert (format "--%s\r\n" boundary))
-        (insert (format "Content-Disposition: form-data; name=\"files\"; filename=\"%s\"\r\n" file-to-index))
-        (insert "Content-Type: text/org\r\n\r\n")
-        (insert "")
-        (insert "\r\n")))
+        ;; find file content-type. Choose from org, markdown, pdf, plaintext
+        (let ((content-type (cond ((string-match "\\.org$" file-to-index) "text/org")
+                                  ((string-match "\\.\\(md\\|markdown\\)$" file-to-index) "text/markdown")
+                                  ((string-match "\\.pdf$" file-to-index) "application/pdf")
+                                  (t "text/plain"))))
+          (insert (format "--%s\r\n" boundary))
+          (insert (format "Content-Disposition: form-data; name=\"files\"; filename=\"%s\"\r\n" file-to-index))
+          (insert "Content-Type: text/org\r\n\r\n")
+          (insert "")
+          (insert "\r\n"))))
     (insert (format "--%s--\r\n" boundary))
     (buffer-string)))
 
@@ -444,8 +478,9 @@ Use `BOUNDARY' to separate files. This is sent to Khoj server as a POST request.
 (when khoj--index-timer
     (cancel-timer khoj--index-timer))
 ;; Send files to index on server every `khoj-index-interval' seconds
-(setq khoj--index-timer
-      (run-with-timer 60 khoj-index-interval 'khoj--server-index-files))
+(when khoj-auto-index
+  (setq khoj--index-timer
+        (run-with-timer 60 khoj-index-interval 'khoj--server-index-files)))
 
 
 ;; -------------------------------------------
@@ -568,22 +603,6 @@ Use `BOUNDARY' to separate files. This is sent to Khoj server as a POST request.
 ;; --------------
 ;; Query Khoj API
 ;; --------------
-
-(defun khoj--post-new-config (config)
-  "Configure khoj server with provided CONFIG."
-  ;; POST provided config to khoj server
-  (let ((url-request-method "POST")
-        (url-request-extra-headers `(("Content-Type" . "application/json")
-                                     ("Authorization" . ,(format "Bearer %s" khoj-api-key))))
-        (url-request-data (encode-coding-string (json-encode-alist config) 'utf-8))
-        (config-url (format "%s/api/config/data" khoj-server-url)))
-    (with-current-buffer (url-retrieve-synchronously config-url)
-      (buffer-string)))
-  ;; Update index on khoj server after configuration update
-  (let ((khoj--server-ready? nil)
-        (url-request-extra-headers `(("Authorization" . ,(format "\"Bearer %s\"" khoj-api-key)))))
-    (url-retrieve (format "%s/api/update?client=emacs" khoj-server-url) #'identity)))
-
 (defun khoj--get-enabled-content-types ()
   "Get content types enabled for search from API."
   (let ((config-url (format "%s/api/config/types" khoj-server-url))
@@ -858,7 +877,7 @@ RECEIVE-DATE is the message receive date."
     (let ((proc-buf (buffer-name (process-buffer proc)))
           (khoj-network-proc-buf (string-join (split-string khoj-server-url "://") " ")))
       (when (string-match (format "%s" khoj-network-proc-buf) proc-buf)
-        (delete-process proc)))))
+        (ignore-errors (delete-process proc))))))
 
 (defun khoj--teardown-incremental-search ()
   "Teardown hooks used for incremental search."
@@ -1036,7 +1055,10 @@ Paragraph only starts at first text after blank line."
 
 ;;;###autoload
 (defun khoj ()
-  "Provide natural, search assistance for your notes, documents and images."
+  "Search and chat with your knowledge base using your personal AI copilot.
+
+Collaborate with Khoj to search, understand, create, review and update your knowledge base.
+Khoj can research across your org-mode, markdown notes, plaintext documents and the internet."
   (interactive)
   (when khoj-auto-setup
     (khoj-setup t))

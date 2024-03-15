@@ -1,26 +1,22 @@
-# Standard Packages
 import logging
 import math
 from pathlib import Path
 from typing import List, Tuple, Type, Union
 
-# External Packages
 import torch
+from asgiref.sync import sync_to_async
 from sentence_transformers import util
 
-from asgiref.sync import sync_to_async
-
-
-# Internal Packages
+from khoj.database.adapters import EntryAdapters, get_user_search_model_or_default
+from khoj.database.models import Entry as DbEntry
+from khoj.database.models import KhojUser
+from khoj.processor.content.text_to_entries import TextToEntries
 from khoj.utils import state
 from khoj.utils.helpers import get_absolute_path, timer
-from khoj.utils.models import BaseEncoder
-from khoj.utils.state import SearchType
-from khoj.utils.rawconfig import SearchResponse, Entry
 from khoj.utils.jsonl import load_jsonl
-from khoj.processor.text_to_entries import TextToEntries
-from database.adapters import EntryAdapters
-from database.models import KhojUser, Entry as DbEntry
+from khoj.utils.models import BaseEncoder
+from khoj.utils.rawconfig import Entry, SearchResponse
+from khoj.utils.state import SearchType
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +111,8 @@ async def query(
     # Encode the query using the bi-encoder
     if question_embedding is None:
         with timer("Query Encode Time", logger, state.device):
-            question_embedding = state.embeddings_model.embed_query(query)
+            search_model = await sync_to_async(get_user_search_model_or_default)(user)
+            question_embedding = state.embeddings_model[search_model.name].embed_query(query)
 
     # Find relevant entries for the query
     top_k = 10
@@ -141,12 +138,13 @@ def collate_results(hits, dedupe=True):
 
         else:
             hit_ids.add(hit.corpus_id)
-            yield SearchResponse.parse_obj(
+            yield SearchResponse.model_validate(
                 {
                     "entry": hit.raw,
                     "score": hit.distance,
                     "corpus_id": str(hit.corpus_id),
                     "additional": {
+                        "source": hit.file_source,
                         "file": hit.file_path,
                         "compiled": hit.compiled,
                         "heading": hit.heading,
@@ -169,6 +167,7 @@ def deduplicated_search_responses(hits: List[SearchResponse]):
                     "score": hit.score,
                     "corpus_id": hit.corpus_id,
                     "additional": {
+                        "source": hit.additional["source"],
                         "file": hit.additional["file"],
                         "compiled": hit.additional["compiled"],
                         "heading": hit.additional["heading"],
@@ -177,13 +176,18 @@ def deduplicated_search_responses(hits: List[SearchResponse]):
             )
 
 
-def rerank_and_sort_results(hits, query, rank_results):
-    # If we have more than one result and reranking is enabled
-    rank_results = rank_results and len(list(hits)) > 1
+def rerank_and_sort_results(hits, query, rank_results, search_model_name):
+    # Rerank results if explicitly requested, if can use inference server or if device has GPU
+    # AND if we have more than one result
+    rank_results = (
+        rank_results
+        or state.cross_encoder_model[search_model_name].inference_server_enabled()
+        or state.device.type != "cpu"
+    ) and len(list(hits)) > 1
 
     # Score all retrieved entries using the cross-encoder
     if rank_results:
-        hits = cross_encoder_score(query, hits)
+        hits = cross_encoder_score(query, hits, search_model_name)
 
     # Sort results by cross-encoder score followed by bi-encoder score
     hits = sort_results(rank_results=rank_results, hits=hits)
@@ -212,14 +216,14 @@ def setup(
         file_names = [file_name for file_name in files]
 
         logger.info(
-            f"Deleted {num_deleted_embeddings} entries. Created {num_new_embeddings} new entries for user {user} from files {file_names}"
+            f"Deleted {num_deleted_embeddings} entries. Created {num_new_embeddings} new entries for user {user} from files {file_names[:10]} ..."
         )
 
 
-def cross_encoder_score(query: str, hits: List[SearchResponse]) -> List[SearchResponse]:
+def cross_encoder_score(query: str, hits: List[SearchResponse], search_model_name: str) -> List[SearchResponse]:
     """Score all retrieved entries using the cross-encoder"""
     with timer("Cross-Encoder Predict Time", logger, state.device):
-        cross_scores = state.cross_encoder_model.predict(query, hits)
+        cross_scores = state.cross_encoder_model[search_model_name].predict(query, hits)
 
     # Convert cross-encoder scores to distances and pass in hits for reranking
     for idx in range(len(cross_scores)):

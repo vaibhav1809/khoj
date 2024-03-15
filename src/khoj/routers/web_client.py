@@ -1,29 +1,29 @@
 # System Packages
 import json
 import os
+from datetime import timedelta
 
-# External Packages
-from fastapi import APIRouter
-from fastapi import Request
-from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
+from fastapi import APIRouter, Request
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from starlette.authentication import requires
-from database import adapters
-from database.models import KhojUser
+from starlette.authentication import has_required_scope, requires
+
+from khoj.database import adapters
+from khoj.database.adapters import (
+    ConversationAdapters,
+    EntryAdapters,
+    get_user_github_config,
+    get_user_name,
+    get_user_notion_config,
+    get_user_subscription_state,
+)
+from khoj.database.models import KhojUser
+from khoj.routers.twilio import is_twilio_enabled
+from khoj.utils import constants, state
 from khoj.utils.rawconfig import (
     GithubContentConfig,
     GithubRepoConfig,
     NotionContentConfig,
-)
-
-# Internal Packages
-from khoj.utils import constants, state
-from database.adapters import (
-    EntryAdapters,
-    get_user_github_config,
-    get_user_notion_config,
-    ConversationAdapters,
-    get_user_subscription_state,
 )
 
 # Initialize Router
@@ -37,7 +37,6 @@ templates = Jinja2Templates(directory=constants.web_directory)
 def index(request: Request):
     user = request.user.object
     user_picture = request.session.get("user", {}).get("picture")
-    user_subscription_state = get_user_subscription_state(user.email)
     has_documents = EntryAdapters.user_has_entries(user=user)
 
     return templates.TemplateResponse(
@@ -46,8 +45,9 @@ def index(request: Request):
             "request": request,
             "username": user.username,
             "user_photo": user_picture,
-            "is_active": user_subscription_state == "subscribed" or user_subscription_state == "unsubscribed",
+            "is_active": has_required_scope(request, ["premium"]),
             "has_documents": has_documents,
+            "khoj_version": state.khoj_version,
         },
     )
 
@@ -57,7 +57,6 @@ def index(request: Request):
 def index_post(request: Request):
     user = request.user.object
     user_picture = request.session.get("user", {}).get("picture")
-    user_subscription_state = get_user_subscription_state(user.email)
     has_documents = EntryAdapters.user_has_entries(user=user)
 
     return templates.TemplateResponse(
@@ -66,8 +65,9 @@ def index_post(request: Request):
             "request": request,
             "username": user.username,
             "user_photo": user_picture,
-            "is_active": user_subscription_state == "subscribed" or user_subscription_state == "unsubscribed",
+            "is_active": has_required_scope(request, ["premium"]),
             "has_documents": has_documents,
+            "khoj_version": state.khoj_version,
         },
     )
 
@@ -77,7 +77,6 @@ def index_post(request: Request):
 def search_page(request: Request):
     user = request.user.object
     user_picture = request.session.get("user", {}).get("picture")
-    user_subscription_state = get_user_subscription_state(user.email)
     has_documents = EntryAdapters.user_has_entries(user=user)
 
     return templates.TemplateResponse(
@@ -86,8 +85,9 @@ def search_page(request: Request):
             "request": request,
             "username": user.username,
             "user_photo": user_picture,
-            "is_active": user_subscription_state == "subscribed" or user_subscription_state == "unsubscribed",
+            "is_active": has_required_scope(request, ["premium"]),
             "has_documents": has_documents,
+            "khoj_version": state.khoj_version,
         },
     )
 
@@ -97,7 +97,6 @@ def search_page(request: Request):
 def chat_page(request: Request):
     user = request.user.object
     user_picture = request.session.get("user", {}).get("picture")
-    user_subscription_state = get_user_subscription_state(user.email)
     has_documents = EntryAdapters.user_has_entries(user=user)
 
     return templates.TemplateResponse(
@@ -106,8 +105,9 @@ def chat_page(request: Request):
             "request": request,
             "username": user.username,
             "user_photo": user_picture,
-            "is_active": user_subscription_state == "subscribed" or user_subscription_state == "unsubscribed",
+            "is_active": has_required_scope(request, ["premium"]),
             "has_documents": has_documents,
+            "khoj_version": state.khoj_version,
         },
     )
 
@@ -141,8 +141,9 @@ def config_page(request: Request):
     subscription_renewal_date = (
         user_subscription.renewal_date.strftime("%d %b %Y")
         if user_subscription and user_subscription.renewal_date
-        else None
+        else (user_subscription.created_at + timedelta(days=7)).strftime("%d %b %Y")
     )
+    given_name = get_user_name(user)
 
     enabled_content_source = set(EntryAdapters.get_unique_file_sources(user))
     successfully_configured = {
@@ -157,6 +158,13 @@ def config_page(request: Request):
     for conversation_option in conversation_options:
         all_conversation_options.append({"chat_model": conversation_option.chat_model, "id": conversation_option.id})
 
+    search_model_options = adapters.get_or_create_search_models().all()
+    all_search_model_options = list()
+    for search_model_option in search_model_options:
+        all_search_model_options.append({"name": search_model_option.name, "id": search_model_option.id})
+
+    current_search_model_option = adapters.get_user_search_model_or_default(user)
+
     return templates.TemplateResponse(
         "config.html",
         context={
@@ -164,15 +172,22 @@ def config_page(request: Request):
             "current_model_state": successfully_configured,
             "anonymous_mode": state.anonymous_mode,
             "username": user.username,
+            "given_name": given_name,
             "conversation_options": all_conversation_options,
+            "search_model_options": all_search_model_options,
+            "selected_search_model_config": current_search_model_option.id,
             "selected_conversation_config": selected_conversation_config.id if selected_conversation_config else None,
             "user_photo": user_picture,
             "billing_enabled": state.billing_enabled,
             "subscription_state": user_subscription_state,
             "subscription_renewal_date": subscription_renewal_date,
             "khoj_cloud_subscription_url": os.getenv("KHOJ_CLOUD_SUBSCRIPTION_URL"),
-            "is_active": user_subscription_state == "subscribed" or user_subscription_state == "unsubscribed",
+            "is_active": has_required_scope(request, ["premium"]),
             "has_documents": has_documents,
+            "is_twilio_enabled": is_twilio_enabled(),
+            "phone_number": user.phone_number,
+            "is_phone_number_verified": user.verified_phone_number,
+            "khoj_version": state.khoj_version,
         },
     )
 
@@ -182,7 +197,6 @@ def config_page(request: Request):
 def github_config_page(request: Request):
     user = request.user.object
     user_picture = request.session.get("user", {}).get("picture")
-    user_subscription_state = get_user_subscription_state(user.email)
     has_documents = EntryAdapters.user_has_entries(user=user)
     current_github_config = get_user_github_config(user)
 
@@ -212,8 +226,9 @@ def github_config_page(request: Request):
             "current_config": current_config,
             "username": user.username,
             "user_photo": user_picture,
-            "is_active": user_subscription_state == "subscribed" or user_subscription_state == "unsubscribed",
+            "is_active": has_required_scope(request, ["premium"]),
             "has_documents": has_documents,
+            "khoj_version": state.khoj_version,
         },
     )
 
@@ -223,7 +238,6 @@ def github_config_page(request: Request):
 def notion_config_page(request: Request):
     user = request.user.object
     user_picture = request.session.get("user", {}).get("picture")
-    user_subscription_state = adapters.get_user_subscription(user.email)
     has_documents = EntryAdapters.user_has_entries(user=user)
     current_notion_config = get_user_notion_config(user)
 
@@ -240,8 +254,9 @@ def notion_config_page(request: Request):
             "current_config": current_config,
             "username": user.username,
             "user_photo": user_picture,
-            "is_active": user_subscription_state == "subscribed" or user_subscription_state == "unsubscribed",
+            "is_active": has_required_scope(request, ["premium"]),
             "has_documents": has_documents,
+            "khoj_version": state.khoj_version,
         },
     )
 
@@ -251,7 +266,6 @@ def notion_config_page(request: Request):
 def computer_config_page(request: Request):
     user = request.user.object
     user_picture = request.session.get("user", {}).get("picture")
-    user_subscription_state = get_user_subscription_state(user.email)
     has_documents = EntryAdapters.user_has_entries(user=user)
 
     return templates.TemplateResponse(
@@ -260,7 +274,8 @@ def computer_config_page(request: Request):
             "request": request,
             "username": user.username,
             "user_photo": user_picture,
-            "is_active": user_subscription_state == "subscribed" or user_subscription_state == "unsubscribed",
+            "is_active": has_required_scope(request, ["premium"]),
             "has_documents": has_documents,
+            "khoj_version": state.khoj_version,
         },
     )

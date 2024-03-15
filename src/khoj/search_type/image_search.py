@@ -1,34 +1,32 @@
-# Standard Packages
+import copy
 import glob
+import logging
 import math
 import pathlib
-import copy
 import shutil
-import logging
 from typing import List
 
-# External Packages
-from sentence_transformers import SentenceTransformer, util
-from PIL import Image
-from tqdm import trange
 import torch
-from khoj.utils import state
+from PIL import Image
+from sentence_transformers import SentenceTransformer, util
+from tqdm import trange
 
-# Internal Packages
-from khoj.utils.helpers import get_absolute_path, get_from_dict, resolve_absolute_path, load_model, timer
 from khoj.utils.config import ImageContent, ImageSearchModel
+from khoj.utils.helpers import (
+    get_absolute_path,
+    get_from_dict,
+    load_model,
+    resolve_absolute_path,
+    timer,
+)
 from khoj.utils.models import BaseEncoder
 from khoj.utils.rawconfig import ImageContentConfig, ImageSearchConfig, SearchResponse
-
 
 # Create Logger
 logger = logging.getLogger(__name__)
 
 
 def initialize_model(search_config: ImageSearchConfig):
-    # Initialize Model
-    torch.set_num_threads(4)
-
     # Convert model directory to absolute path
     search_config.model_directory = resolve_absolute_path(search_config.model_directory)
 

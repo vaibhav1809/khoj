@@ -1,26 +1,27 @@
-# Standard Packages
 import os
 import threading
-from typing import List, Dict
 from collections import defaultdict
-
-# External Packages
 from pathlib import Path
-from khoj.processor.embeddings import CrossEncoderModel, EmbeddingsModel
+from typing import Dict, List
 
-# Internal Packages
+from openai import OpenAI
+from whisper import Whisper
+
+from khoj.processor.embeddings import CrossEncoderModel, EmbeddingsModel
 from khoj.utils import config as utils_config
-from khoj.utils.config import ContentIndex, SearchModels, GPT4AllProcessorModel
+from khoj.utils.config import ContentIndex, GPT4AllProcessorModel, SearchModels
 from khoj.utils.helpers import LRU, get_device
 from khoj.utils.rawconfig import FullConfig
 
 # Application Global State
 config = FullConfig()
 search_models = SearchModels()
-embeddings_model: EmbeddingsModel = None
-cross_encoder_model: CrossEncoderModel = None
+embeddings_model: Dict[str, EmbeddingsModel] = None
+cross_encoder_model: Dict[str, CrossEncoderModel] = None
 content_index = ContentIndex()
+openai_client: OpenAI = None
 gpt4all_processor_config: GPT4AllProcessorModel = None
+whisper_model: Whisper = None
 config_file: Path = None
 verbose: int = 0
 host: str = None

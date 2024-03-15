@@ -1,13 +1,11 @@
-# Standard Packages
 import json
 import os
 from pathlib import Path
 
-# Internal Packages
+from khoj.database.models import KhojUser, LocalPlaintextConfig
+from khoj.processor.content.plaintext.plaintext_to_entries import PlaintextToEntries
 from khoj.utils.fs_syncer import get_plaintext_files
 from khoj.utils.rawconfig import TextContentConfig
-from khoj.processor.plaintext.plaintext_to_entries import PlaintextToEntries
-from database.models import LocalPlaintextConfig, KhojUser
 
 
 def test_plaintext_file(tmp_path):

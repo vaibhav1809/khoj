@@ -68,7 +68,7 @@ const schema = {
 };
 
 let syncing = false;
-var state = {}
+let state = {}
 const store = new Store({ schema });
 
 console.log(store);
@@ -106,7 +106,23 @@ function filenameToMimeType (filename) {
         case 'org':
             return 'text/org';
         default:
+            console.warn(`Unknown file type: ${extension}. Defaulting to text/plain.`);
             return 'text/plain';
+    }
+}
+
+function processDirectory(filesToPush, folder) {
+    const files = fs.readdirSync(folder.path, { withFileTypes: true, recursive: true });
+
+    for (const file of files) {
+        if (file.isFile() && validFileTypes.includes(file.name.split('.').pop())) {
+            console.log(`Add ${file.name} in ${folder.path} for indexing`);
+            filesToPush.push(path.join(folder.path, file.name));
+        }
+
+        if (file.isDirectory()) {
+            processDirectory(filesToPush, {'path': path.join(folder.path, file.name)});
+        }
     }
 }
 
@@ -132,16 +148,11 @@ function pushDataToKhoj (regenerate = false) {
 
     // Collect paths of all indexable files in configured folders
     for (const folder of folders) {
-        const files = fs.readdirSync(folder.path, { withFileTypes: true });
-        for (const file of files) {
-            if (file.isFile() && validFileTypes.includes(file.name.split('.').pop())) {
-                filesToPush.push(path.join(folder.path, file.name));
-            }
-        }
+        processDirectory(filesToPush, folder);
     }
 
     const lastSync = store.get('lastSync') || [];
-    const formData = new FormData();
+    const filesDataToPush = [];
     for (const file of filesToPush) {
         const stats = fs.statSync(file);
         if (!regenerate) {
@@ -157,7 +168,7 @@ function pushDataToKhoj (regenerate = false) {
             let mimeType = filenameToMimeType(file) + (encoding === "utf8" ? "; charset=UTF-8" : "");
             let fileContent = Buffer.from(fs.readFileSync(file, { encoding: encoding }), encoding);
             let fileObj = new Blob([fileContent], { type: mimeType });
-            formData.append('files', fileObj, file);
+            filesDataToPush.push({blob: fileObj, path: file});
             state[file] = {
                 success: true,
             }
@@ -174,44 +185,54 @@ function pushDataToKhoj (regenerate = false) {
     for (const syncedFile of lastSync) {
         if (!filesToPush.includes(syncedFile.path)) {
             fileObj = new Blob([""], { type: filenameToMimeType(syncedFile.path) });
-            formData.append('files', fileObj, syncedFile.path);
+            filesDataToPush.push({blob: fileObj, path: syncedFile.path});
         }
     }
 
     // Send collected files to Khoj server for indexing
-    if (!!formData?.entries()?.next().value) {
-        const hostURL = store.get('hostURL') || KHOJ_URL;
-        const headers = {
-            'Authorization': `Bearer ${store.get("khojToken")}`
-        };
-        axios.post(`${hostURL}/api/v1/index/update?force=${regenerate}&client=desktop`, formData, { headers })
-            .then(response => {
-                console.log(response.data);
-                let lastSync = [];
-                for (const file of filesToPush) {
-                    lastSync.push({
-                        path: file,
-                        datetime: new Date().toISOString()
-                    });
-                }
-                store.set('lastSync', lastSync);
-            })
-            .catch(error => {
-                console.error(error);
-                state['completed'] = false
-            })
-            .finally(() => {
-                // Syncing complete
-                syncing = false;
-                const win = BrowserWindow.getAllWindows()[0];
-                if (win) win.webContents.send('update-state', state);
-            });
-    } else {
+    const hostURL = store.get('hostURL') || KHOJ_URL;
+    const headers = { 'Authorization': `Bearer ${store.get("khojToken")}` };
+    let requests = [];
+
+    // Request indexing files on server. With upto 1000 files in each request
+    for (let i = 0; i < filesDataToPush.length; i += 1000) {
+        const filesDataGroup = filesDataToPush.slice(i, i + 1000);
+        const formData = new FormData();
+        filesDataGroup.forEach(fileData => { formData.append('files', fileData.blob, fileData.path) });
+        let request = axios.post(`${hostURL}/api/v1/index/update?force=${regenerate}&client=desktop`, formData, { headers });
+        requests.push(request);
+    }
+
+    // Wait for requests batch to finish
+    Promise
+    .all(requests)
+    .then(responses => {
+        const lastSync = filesToPush
+            .filter(file => responses.find(response => response.data.includes(file)))
+            .map(file => ({ path: file, datetime: new Date().toISOString() }));
+        store.set('lastSync', lastSync);
+    })
+    .catch(error => {
+        console.error(error);
+        state["completed"] = false;
+        if (error?.response?.status === 429 && (BrowserWindow.getAllWindows().find(win => win.webContents.getURL().includes('config')))) {
+            state["error"] = `Looks like you're out of space to sync your files. <a href="https://app.khoj.dev/config">Upgrade your plan</a> to unlock more space.`;
+            const win = BrowserWindow.getAllWindows().find(win => win.webContents.getURL().includes('config'));
+            if (win) win.webContents.send('needsSubscription', true);
+        } else if (error?.code === 'ECONNREFUSED') {
+            state["error"] = `Could not connect to Khoj server. Ensure you can connect to it at ${error.address}:${error.port}.`;
+        } else {
+            state["error"] = `Sync was unsuccessful at ${currentTime.toLocaleTimeString()}. Contact team@khoj.dev to report this issue.`;
+        }
+    })
+    .finally(() => {
         // Syncing complete
         syncing = false;
-        const win = BrowserWindow.getAllWindows()[0];
-        if (win) win.webContents.send('update-state', state);
-    }
+        const win = BrowserWindow.getAllWindows().find(win => win.webContents.getURL().includes('config'));
+        if (win) {
+            win.webContents.send('update-state', state);
+        }
+    });
 }
 
 pushDataToKhoj();
@@ -338,7 +359,7 @@ const createWindow = (tab = 'chat.html') => {
       width: 800,
       height: 800,
       show: false,
-    //   titleBarStyle: 'hidden',
+      titleBarStyle: 'hidden',
       webPreferences: {
         preload: path.join(__dirname, 'preload.js'),
         nodeIntegration: true,
@@ -361,6 +382,29 @@ const createWindow = (tab = 'chat.html') => {
     win.setBackgroundColor('#f5f4f3');
     win.setHasShadow(true);
 
+    // Open external links in link handler registered on OS (e.g. browser)
+    win.webContents.setWindowOpenHandler(async ({ url }) => {
+        let shouldOpen = { response: 0 };
+
+        if (!url.startsWith(store.get('hostURL'))) {
+            // Confirm before opening external links
+            const confirmNotice = `Do you want to open this link? It will be handled by an external application.\n\n${url}`;
+            shouldOpen = await dialog.showMessageBox({
+                type: 'question',
+                buttons: ['Yes', 'No'],
+                defaultId: 1,
+                title: 'Confirm',
+                message: confirmNotice,
+            });
+        }
+
+        // If user confirms, let OS link handler open the link in appropriate app
+        if (shouldOpen.response === 0) shell.openExternal(url);
+
+        // Do not open external links within the app
+        return { action: 'deny' };
+    });
+
     job.start();
 
     win.loadFile(tab)
@@ -369,7 +413,7 @@ const createWindow = (tab = 'chat.html') => {
         firstRun = false;
 
         // Create splash screen
-        var splash = new BrowserWindow({width: 400, height: 400, transparent: true, frame: false, alwaysOnTop: true});
+        let splash = new BrowserWindow({width: 400, height: 400, transparent: true, frame: false, alwaysOnTop: true});
         splash.setOpacity(1.0);
         splash.setBackgroundColor('#d16b4e');
         splash.loadFile('splash.html');
@@ -394,6 +438,11 @@ app.whenReady().then(() => {
     ipcMain.on('update-state', (event, arg) => {
         console.log(arg);
         event.reply('update-state', arg);
+    });
+
+    ipcMain.on('needsSubscription', (event, arg) => {
+        console.log(arg);
+        event.reply('needsSubscription', arg);
     });
 
     ipcMain.on('navigate', (event, page) => {
@@ -506,7 +555,8 @@ openWindow = (page) => {
 }
 
 app.whenReady().then(() => {
-    const icon = nativeImage.createFromPath('assets/icons/favicon-20x20.png')
+    const iconPath = path.join(__dirname, './assets/icons/favicon-20x20.png')
+    const icon = nativeImage.createFromPath(iconPath)
     tray = new Tray(icon)
 
     const contextMenu = Menu.buildFromTemplate([

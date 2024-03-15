@@ -3,14 +3,15 @@ FROM ubuntu:jammy
 LABEL org.opencontainers.image.source https://github.com/khoj-ai/khoj
 
 # Install System Dependencies
-RUN apt update -y && apt -y install python3-pip git
+RUN apt update -y && apt -y install python3-pip swig
 
 WORKDIR /app
 
 # Install Application
 COPY pyproject.toml .
 COPY README.md .
-RUN sed -i 's/dynamic = \["version"\]/version = "0.0.0"/' pyproject.toml && \
+ARG VERSION=0.0.0
+RUN sed -i "s/dynamic = \\[\"version\"\\]/version = \"$VERSION\"/" pyproject.toml && \
     pip install --no-cache-dir .
 
 # Copy Source Code

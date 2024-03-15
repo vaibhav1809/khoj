@@ -112,14 +112,14 @@
                 } else if (
                     item.additional.file.endsWith(".md") ||
                     item.additional.file.endsWith(".markdown") ||
-                        (item.additional.file.includes("issues") && item.additional.file.includes("github.com")) ||
-                        (item.additional.file.includes("commit") && item.additional.file.includes("github.com"))
+                        (item.additional.file.includes("issues") && item.additional.source === "github") ||
+                        (item.additional.file.includes("commit") && item.additional.source === "github")
                     )
                 {
                     html += render_markdown(query, [item]);
                 } else if (item.additional.file.endsWith(".pdf")) {
                     html += render_pdf(query, [item]);
-                } else if (item.additional.file.includes("notion.so")) {
+                } else if (item.additional.source == "notion") {
                     html += `<div class="results-notion">` + `<b><a href="${item.additional.file}">${item.additional.heading}</a></b>` + `<p>${item.entry}</p>` + `</div>`;
                 } else if (item.additional.file.endsWith(".html")) {
                     html += render_html(query, [item]);
@@ -192,16 +192,17 @@
                 });
         }
 
+        let debounceTimeout;
         function incrementalSearch(event) {
-            type = 'all';
-            // Search with reranking on 'Enter'
-            if (event.key === 'Enter') {
-                search(rerank=true);
-            }
-            // Limit incremental search to text types
-            else if (type !== "image") {
-                search(rerank=false);
-            }
+            // Run incremental search only after waitTime passed since the last key press
+            let waitTime = 300;
+            clearTimeout(debounceTimeout);
+            debounceTimeout = setTimeout(() => {
+                type = 'all';
+                // Search with reranking on 'Enter'
+                let should_rerank = event.key === 'Enter';
+                search(rerank=should_rerank);
+            }, waitTime);
         }
 
         async function populate_type_dropdown() {
@@ -304,7 +305,7 @@
             margin: 0px;
             background: var(--background-color);
             color: var(--main-text-color);
-            font-family: roboto, karma, segoe ui, sans-serif;
+            font-family: var(--font-family);
             font-size: small;
             font-weight: 300;
             line-height: 1.5em;
