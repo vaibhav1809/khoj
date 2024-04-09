@@ -1,5 +1,5 @@
 const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell } = require('electron');
-const FileType = require('file-type');
+const Magika = require('magika').MagikaNode;
 const todesktop = require("@todesktop/runtime");
 const khojPackage = require('./package.json');
 
@@ -15,8 +15,7 @@ const KHOJ_URL = 'https://app.khoj.dev';
 
 const Store = require('electron-store');
 
-const validFileTypes = ['org', 'md', 'markdown', 'txt', 'html', 'xml', 'pdf']
-
+const magika = new Magika();
 const binaryFileTypes = ['pdf', 'png', 'jpg', 'jpeg']
 
 const schema = {
@@ -68,6 +67,7 @@ const schema = {
     }
 };
 
+let isMagikaLoaded = false;
 let syncing = false;
 let state = {}
 const store = new Store({ schema });
@@ -113,11 +113,19 @@ function filenameToMimeType (filename) {
 }
 
 async function isPlainTextFile(filePath) {
-    const fileType = await FileType.fromFile(filePath);
-    if (!fileType) {
+    if (!isMagikaLoaded) {
+        await magika.load();
+        isMagikaLoaded = true;
+    }
+    try {
+        const fileContent = fs.readFileSync(filePath);
+        const fileType = await magika.identifyBytes(fileContent);
+        const fileLabel = magika.config.labels.filter(l => l.name == fileType.label)?.[0]
+        return fileLabel?.is_text
+    } catch (err) {
+        console.error("Failed to identify file type: ", err);
         return false;
     }
-    return fileType.mime.startsWith('text/');
 }
 
 async function processDirectory(filesToPush, folder) {
