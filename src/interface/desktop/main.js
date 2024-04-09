@@ -128,20 +128,10 @@ async function isPlainTextFile(filePath) {
     }
 }
 
-async function processDirectory(filesToPush, folder) {
-    const files = fs.readdirSync(folder.path, { withFileTypes: true });
-
-    for (const file of files) {
-        const filePath = path.join(file.path, file.name || '');
-        if (file.isFile() && await isPlainTextFile(filePath)) {
-            console.log(`Add ${file.name} in ${file.path} for indexing`);
-            filesToPush.push(filePath);
-        }
-
-        if (file.isDirectory()) {
-            await processDirectory(filesToPush, {'path': filePath});
-        }
-    }
+async function processDirectory(folder) {
+    return fs
+    .readdirSync(folder.path, { withFileTypes: true, recursive: true })
+    .filter(file => file.isFile())
 }
 
 async function pushDataToKhoj (regenerate = false) {
@@ -166,7 +156,7 @@ async function pushDataToKhoj (regenerate = false) {
 
     // Collect paths of all indexable files in configured folders
     for (const folder of folders) {
-        await processDirectory(filesToPush, folder);
+        filesToPush.push(...await processDirectory(folder));
     }
 
     const lastSync = store.get('lastSync') || [];
