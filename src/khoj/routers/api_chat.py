@@ -1,17 +1,18 @@
+import asyncio
 import json
 import logging
 import math
 from datetime import datetime
+from functools import partial
 from typing import Dict, Optional
 from urllib.parse import unquote
 
 from asgiref.sync import sync_to_async
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.requests import Request
 from fastapi.responses import Response, StreamingResponse
+from sse_starlette import EventSourceResponse
 from starlette.authentication import requires
-from starlette.websockets import WebSocketDisconnect
-from websockets import ConnectionClosedOK
 
 from khoj.database.adapters import (
     ConversationAdapters,
@@ -398,332 +399,366 @@ async def set_conversation_title(
     )
 
 
-@api_chat.websocket("/ws")
-async def websocket_endpoint(
-    websocket: WebSocket,
+@api_chat.get("/stream")
+async def stream_chat(
+    request: Request,
+    q: str,
     conversation_id: int,
     city: Optional[str] = None,
     region: Optional[str] = None,
     country: Optional[str] = None,
     timezone: Optional[str] = None,
 ):
-    connection_alive = True
+    async def event_generator(q: str):
+        connection_alive = True
 
-    async def send_status_update(message: str):
-        nonlocal connection_alive
-        if not connection_alive:
-            return
-
-        status_packet = {
-            "type": "status",
-            "message": message,
-            "content-type": "application/json",
-        }
-        try:
-            await websocket.send_text(json.dumps(status_packet))
-        except ConnectionClosedOK:
-            connection_alive = False
-            logger.info(f"User {user} disconnected web socket. Emitting rest of responses to clear thread")
-
-    async def send_complete_llm_response(llm_response: str):
-        nonlocal connection_alive
-        if not connection_alive:
-            return
-        try:
-            await websocket.send_text("start_llm_response")
-            await websocket.send_text(llm_response)
-            await websocket.send_text("end_llm_response")
-        except ConnectionClosedOK:
-            connection_alive = False
-            logger.info(f"User {user} disconnected web socket. Emitting rest of responses to clear thread")
-
-    async def send_message(message: str):
-        nonlocal connection_alive
-        if not connection_alive:
-            return
-        try:
-            await websocket.send_text(message)
-        except ConnectionClosedOK:
-            connection_alive = False
-            logger.info(f"User {user} disconnected web socket. Emitting rest of responses to clear thread")
-
-    async def send_rate_limit_message(message: str):
-        nonlocal connection_alive
-        if not connection_alive:
-            return
-
-        status_packet = {
-            "type": "rate_limit",
-            "message": message,
-            "content-type": "application/json",
-        }
-        try:
-            await websocket.send_text(json.dumps(status_packet))
-        except ConnectionClosedOK:
-            connection_alive = False
-            logger.info(f"User {user} disconnected web socket. Emitting rest of responses to clear thread")
-
-    user: KhojUser = websocket.user.object
-    conversation = await ConversationAdapters.aget_conversation_by_user(
-        user, client_application=websocket.user.client_app, conversation_id=conversation_id
-    )
-
-    hourly_limiter = ApiUserRateLimiter(requests=5, subscribed_requests=60, window=60, slug="chat_minute")
-
-    daily_limiter = ApiUserRateLimiter(requests=5, subscribed_requests=600, window=60 * 60 * 24, slug="chat_day")
-
-    await is_ready_to_chat(user)
-
-    user_name = await aget_user_name(user)
-
-    location = None
-
-    if city or region or country:
-        location = LocationData(city=city, region=region, country=country)
-
-    await websocket.accept()
-    while connection_alive:
-        try:
-            if conversation:
-                await sync_to_async(conversation.refresh_from_db)(fields=["conversation_log"])
-            q = await websocket.receive_text()
-
-            # Refresh these because the connection to the database might have been closed
-            await conversation.arefresh_from_db()
-
-        except WebSocketDisconnect:
-            logger.debug(f"User {user} disconnected web socket")
-            break
-
-        try:
-            await sync_to_async(hourly_limiter)(websocket)
-            await sync_to_async(daily_limiter)(websocket)
-        except HTTPException as e:
-            await send_rate_limit_message(e.detail)
-            break
-
-        if is_query_empty(q):
-            await send_message("start_llm_response")
-            await send_message(
-                "It seems like your query is incomplete. Could you please provide more details or specify what you need help with?"
-            )
-            await send_message("end_llm_response")
-            continue
-
-        user_message_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        conversation_commands = [get_conversation_command(query=q, any_references=True)]
-
-        await send_status_update(f"**👀 Understanding Query**: {q}")
-
-        meta_log = conversation.conversation_log
-        is_automated_task = conversation_commands == [ConversationCommand.AutomatedTask]
-
-        if conversation_commands == [ConversationCommand.Default] or is_automated_task:
-            conversation_commands = await aget_relevant_information_sources(q, meta_log, is_automated_task)
-            conversation_commands_str = ", ".join([cmd.value for cmd in conversation_commands])
-            await send_status_update(f"**🗃️ Chose Data Sources to Search:** {conversation_commands_str}")
-
-            mode = await aget_relevant_output_modes(q, meta_log, is_automated_task)
-            await send_status_update(f"**🧑🏾‍💻 Decided Response Mode:** {mode.value}")
-            if mode not in conversation_commands:
-                conversation_commands.append(mode)
-
-        for cmd in conversation_commands:
-            await conversation_command_rate_limiter.update_and_check_if_valid(websocket, cmd)
-            q = q.replace(f"/{cmd.value}", "").strip()
-
-        custom_filters = []
-        if conversation_commands == [ConversationCommand.Help]:
-            if not q:
-                conversation_config = await ConversationAdapters.aget_user_conversation_config(user)
-                if conversation_config == None:
-                    conversation_config = await ConversationAdapters.aget_default_conversation_config()
-                model_type = conversation_config.model_type
-                formatted_help = help_message.format(model=model_type, version=state.khoj_version, device=get_device())
-                await send_complete_llm_response(formatted_help)
-                continue
-            # Adding specification to search online specifically on khoj.dev pages.
-            custom_filters.append("site:khoj.dev")
-            conversation_commands.append(ConversationCommand.Online)
-
-        if ConversationCommand.Automation in conversation_commands:
+        async def send_event(event_type: str, data: str):
+            nonlocal connection_alive
+            if not connection_alive or await request.is_disconnected():
+                return
             try:
-                automation, crontime, query_to_run, subject = await create_automation(
-                    q, timezone, user, websocket.url, meta_log
-                )
+                if event_type == "message":
+                    yield data
+                else:
+                    yield {"event": event_type, "data": data, "retry": 15000}
             except Exception as e:
-                logger.error(f"Error scheduling task {q} for {user.email}: {e}")
-                await send_complete_llm_response(
-                    f"Unable to create automation. Ensure the automation doesn't already exist."
-                )
-                continue
+                connection_alive = False
+                logger.info(f"User {user} disconnected SSE. Emitting rest of responses to clear thread: {e}")
 
-            llm_response = construct_automation_created_message(automation, crontime, query_to_run, subject)
-            await sync_to_async(save_to_conversation_log)(
-                q,
-                llm_response,
-                user,
-                meta_log,
-                user_message_time,
-                intent_type="automation",
-                client_application=websocket.user.client_app,
-                conversation_id=conversation_id,
-                inferred_queries=[query_to_run],
-                automation_id=automation.id,
-            )
-            common = CommonQueryParamsClass(
-                client=websocket.user.client_app,
-                user_agent=websocket.headers.get("user-agent"),
-                host=websocket.headers.get("host"),
-            )
-            update_telemetry_state(
-                request=websocket,
-                telemetry_type="api",
-                api="chat",
-                **common.__dict__,
-            )
-            await send_complete_llm_response(llm_response)
-            continue
-
-        compiled_references, inferred_queries, defiltered_query = await extract_references_and_questions(
-            websocket, meta_log, q, 7, 0.18, conversation_commands, location, send_status_update
+        user: KhojUser = request.user.object
+        conversation = await ConversationAdapters.aget_conversation_by_user(
+            user, client_application=request.user.client_app, conversation_id=conversation_id
         )
 
-        if compiled_references:
-            headings = "\n- " + "\n- ".join(
-                set([" ".join(c.get("compiled", c).split("Path: ")[1:]).split("\n ")[0] for c in compiled_references])
-            )
-            await send_status_update(f"**📜 Found Relevant Notes**: {headings}")
+        hourly_limiter = ApiUserRateLimiter(requests=5, subscribed_requests=60, window=60, slug="chat_minute")
+        daily_limiter = ApiUserRateLimiter(requests=5, subscribed_requests=600, window=60 * 60 * 24, slug="chat_day")
 
-        online_results: Dict = dict()
+        await is_ready_to_chat(user)
+        user_name = await aget_user_name(user)
 
-        if conversation_commands == [ConversationCommand.Notes] and not await EntryAdapters.auser_has_entries(user):
-            await send_complete_llm_response(f"{no_entries_found.format()}")
-            continue
+        location = None
+        if city or region or country:
+            location = LocationData(city=city, region=region, country=country)
 
-        if ConversationCommand.Notes in conversation_commands and is_none_or_empty(compiled_references):
-            conversation_commands.remove(ConversationCommand.Notes)
-
-        if ConversationCommand.Online in conversation_commands:
-            if not online_search_enabled():
-                conversation_commands.remove(ConversationCommand.Online)
-                # If online search is not enabled, try to read webpages directly
-                if ConversationCommand.Webpage not in conversation_commands:
-                    conversation_commands.append(ConversationCommand.Webpage)
-            else:
-                try:
-                    online_results = await search_online(
-                        defiltered_query, meta_log, location, send_status_update, custom_filters
-                    )
-                except ValueError as e:
-                    logger.warning(f"Error searching online: {e}. Attempting to respond without online results")
-                    await send_complete_llm_response(
-                        f"Error searching online: {e}. Attempting to respond without online results"
-                    )
-                    continue
-
-        if ConversationCommand.Webpage in conversation_commands:
+        while connection_alive:
             try:
-                direct_web_pages = await read_webpages(defiltered_query, meta_log, location, send_status_update)
-                webpages = []
-                for query in direct_web_pages:
-                    if online_results.get(query):
-                        online_results[query]["webpages"] = direct_web_pages[query]["webpages"]
+                if conversation:
+                    await sync_to_async(conversation.refresh_from_db)(fields=["conversation_log"])
+
+                await conversation.arefresh_from_db()
+
+                try:
+                    await sync_to_async(hourly_limiter)(request)
+                    await sync_to_async(daily_limiter)(request)
+                except HTTPException as e:
+                    async for result in send_event("rate_limit", e.detail):
+                        yield result
+                    break
+
+                if is_query_empty(q):
+                    async for event in send_event("start_llm_response", ""):
+                        yield event
+                    async for event in send_event(
+                        "message",
+                        "It seems like your query is incomplete. Could you please provide more details or specify what you need help with?",
+                    ):
+                        yield event
+                    async for event in send_event("end_llm_response", ""):
+                        yield event
+                    return
+
+                user_message_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                conversation_commands = [get_conversation_command(query=q, any_references=True)]
+
+                async for result in send_event("status", f"**👀 Understanding Query**: {q}"):
+                    yield result
+
+                meta_log = conversation.conversation_log
+                is_automated_task = conversation_commands == [ConversationCommand.AutomatedTask]
+
+                if conversation_commands == [ConversationCommand.Default] or is_automated_task:
+                    conversation_commands = await aget_relevant_information_sources(q, meta_log, is_automated_task)
+                    conversation_commands_str = ", ".join([cmd.value for cmd in conversation_commands])
+                    async for result in send_event(
+                        "status", f"**🗃️ Chose Data Sources to Search:** {conversation_commands_str}"
+                    ):
+                        yield result
+
+                    mode = await aget_relevant_output_modes(q, meta_log, is_automated_task)
+                    async for result in send_event("status", f"**🧑🏾‍💻 Decided Response Mode:** {mode.value}"):
+                        yield result
+                    if mode not in conversation_commands:
+                        conversation_commands.append(mode)
+
+                for cmd in conversation_commands:
+                    await conversation_command_rate_limiter.update_and_check_if_valid(request, cmd)
+                    q = q.replace(f"/{cmd.value}", "").strip()
+
+                custom_filters = []
+                if conversation_commands == [ConversationCommand.Help]:
+                    if not q:
+                        conversation_config = await ConversationAdapters.aget_user_conversation_config(user)
+                        if conversation_config == None:
+                            conversation_config = await ConversationAdapters.aget_default_conversation_config()
+                        model_type = conversation_config.model_type
+                        formatted_help = help_message.format(
+                            model=model_type, version=state.khoj_version, device=get_device()
+                        )
+                        async for result in send_event("complete_llm_response", formatted_help):
+                            yield result
+                        async for event in send_event("end_llm_response", ""):
+                            yield event
+                        return
+                    custom_filters.append("site:khoj.dev")
+                    conversation_commands.append(ConversationCommand.Online)
+
+                if ConversationCommand.Automation in conversation_commands:
+                    try:
+                        automation, crontime, query_to_run, subject = await create_automation(
+                            q, timezone, user, request.url, meta_log
+                        )
+                    except Exception as e:
+                        logger.error(f"Error scheduling task {q} for {user.email}: {e}")
+                        async for result in send_event(
+                            "complete_llm_response",
+                            "Unable to create automation. Ensure the automation doesn't already exist.",
+                        ):
+                            yield result
+                        async for event in send_event("end_llm_response", ""):
+                            yield event
+                        return
+
+                    llm_response = construct_automation_created_message(automation, crontime, query_to_run, subject)
+                    await sync_to_async(save_to_conversation_log)(
+                        q,
+                        llm_response,
+                        user,
+                        meta_log,
+                        user_message_time,
+                        intent_type="automation",
+                        client_application=request.user.client_app,
+                        conversation_id=conversation_id,
+                        inferred_queries=[query_to_run],
+                        automation_id=automation.id,
+                    )
+                    common = CommonQueryParamsClass(
+                        client=request.user.client_app,
+                        user_agent=request.headers.get("user-agent"),
+                        host=request.headers.get("host"),
+                    )
+                    update_telemetry_state(
+                        request=request,
+                        telemetry_type="api",
+                        api="chat",
+                        **common.__dict__,
+                    )
+                    async for event in send_event("complete_llm_response", llm_response):
+                        yield event
+                    async for event in send_event("end_llm_response", ""):
+                        yield event
+                    return
+
+                compiled_references, inferred_queries, defiltered_query = [], [], None
+                async for result in extract_references_and_questions(
+                    request, meta_log, q, 7, 0.18, conversation_commands, location, partial(send_event, "status")
+                ):
+                    if isinstance(result, dict) and "status" in result:
+                        yield result["status"]
                     else:
-                        online_results[query] = {"webpages": direct_web_pages[query]["webpages"]}
+                        compiled_references.extend(result[0])
+                        inferred_queries.extend(result[1])
+                        defiltered_query = result[2]
 
-                    for webpage in direct_web_pages[query]["webpages"]:
-                        webpages.append(webpage["link"])
+                if not is_none_or_empty(compiled_references):
+                    headings = "\n- " + "\n- ".join(
+                        set(
+                            [
+                                " ".join(c.get("compiled", c).split("Path: ")[1:]).split("\n ")[0]
+                                for c in compiled_references
+                            ]
+                        )
+                    )
+                    async for result in send_event("status", f"**📜 Found Relevant Notes**: {headings}"):
+                        yield result
 
-                await send_status_update(f"**📚 Read web pages**: {webpages}")
-            except ValueError as e:
-                logger.warning(
-                    f"Error directly reading webpages: {e}. Attempting to respond without online results", exc_info=True
+                online_results: Dict = dict()
+
+                if conversation_commands == [ConversationCommand.Notes] and not await EntryAdapters.auser_has_entries(
+                    user
+                ):
+                    async for event in send_event("complete_llm_response", f"{no_entries_found.format()}"):
+                        yield event
+                    async for event in send_event("end_llm_response", ""):
+                        yield event
+                    return
+
+                if ConversationCommand.Notes in conversation_commands and is_none_or_empty(compiled_references):
+                    conversation_commands.remove(ConversationCommand.Notes)
+
+                if ConversationCommand.Online in conversation_commands:
+                    if not online_search_enabled():
+                        conversation_commands.remove(ConversationCommand.Online)
+                        if ConversationCommand.Webpage not in conversation_commands:
+                            conversation_commands.append(ConversationCommand.Webpage)
+                    else:
+                        try:
+                            async for result in search_online(
+                                defiltered_query, meta_log, location, partial(send_event, "status"), custom_filters
+                            ):
+                                if isinstance(result, dict) and "status" in result:
+                                    yield result["status"]
+                                else:
+                                    online_results = result
+                        except ValueError as e:
+                            logger.warning(f"Error searching online: {e}. Attempting to respond without online results")
+                            async for event in send_event(
+                                "complete_llm_response",
+                                f"Error searching online: {e}. Attempting to respond without online results",
+                            ):
+                                yield event
+                            async for event in send_event("end_llm_response", ""):
+                                yield event
+                            return
+
+                if ConversationCommand.Webpage in conversation_commands:
+                    try:
+                        async for result in read_webpages(
+                            defiltered_query, meta_log, location, partial(send_event, "status")
+                        ):
+                            if isinstance(result, dict) and "status" in result:
+                                yield result["status"]
+                            else:
+                                direct_web_pages = result
+                        webpages = []
+                        for query in direct_web_pages:
+                            if online_results.get(query):
+                                online_results[query]["webpages"] = direct_web_pages[query]["webpages"]
+                            else:
+                                online_results[query] = {"webpages": direct_web_pages[query]["webpages"]}
+
+                            for webpage in direct_web_pages[query]["webpages"]:
+                                webpages.append(webpage["link"])
+
+                        async for event in send_event("status", f"**📚 Read web pages**: {webpages}"):
+                            yield event
+                    except ValueError as e:
+                        logger.warning(
+                            f"Error directly reading webpages: {e}. Attempting to respond without online results",
+                            exc_info=True,
+                        )
+
+                if ConversationCommand.Image in conversation_commands:
+                    update_telemetry_state(
+                        request=request,
+                        telemetry_type="api",
+                        api="chat",
+                        metadata={"conversation_command": conversation_commands[0].value},
+                    )
+                    async for result in text_to_image(
+                        q,
+                        user,
+                        meta_log,
+                        location_data=location,
+                        references=compiled_references,
+                        online_results=online_results,
+                        send_status_func=partial(send_event, "status"),
+                    ):
+                        if isinstance(result, dict) and "status" in result:
+                            yield result["status"]
+                        else:
+                            image, status_code, improved_image_prompt, intent_type = result
+                    if image is None or status_code != 200:
+                        content_obj = {
+                            "image": image,
+                            "intentType": intent_type,
+                            "detail": improved_image_prompt,
+                            "content-type": "application/json",
+                        }
+                        async for event in send_event("complete_llm_response", json.dumps(content_obj)):
+                            yield event
+                        async for event in send_event("end_llm_response", ""):
+                            yield event
+                        return
+
+                    await sync_to_async(save_to_conversation_log)(
+                        q,
+                        image,
+                        user,
+                        meta_log,
+                        user_message_time,
+                        intent_type=intent_type,
+                        inferred_queries=[improved_image_prompt],
+                        client_application=request.user.client_app,
+                        conversation_id=conversation_id,
+                        compiled_references=compiled_references,
+                        online_results=online_results,
+                    )
+                    content_obj = {
+                        "image": image,
+                        "intentType": intent_type,
+                        "inferredQueries": [improved_image_prompt],
+                        "context": compiled_references,
+                        "content-type": "application/json",
+                        "online_results": online_results,
+                    }
+                    async for event in send_event("complete_llm_response", json.dumps(content_obj)):
+                        yield event
+                    async for event in send_event("end_llm_response", ""):
+                        yield event
+                    return
+
+                async for result in send_event("status", f"**💭 Generating a well-informed response**"):
+                    yield result
+                llm_response, chat_metadata = await agenerate_chat_response(
+                    defiltered_query,
+                    meta_log,
+                    conversation,
+                    compiled_references,
+                    online_results,
+                    inferred_queries,
+                    conversation_commands,
+                    user,
+                    request.user.client_app,
+                    conversation_id,
+                    location,
+                    user_name,
                 )
 
-        if ConversationCommand.Image in conversation_commands:
-            update_telemetry_state(
-                request=websocket,
-                telemetry_type="api",
-                api="chat",
-                metadata={"conversation_command": conversation_commands[0].value},
-            )
-            image, status_code, improved_image_prompt, intent_type = await text_to_image(
-                q,
-                user,
-                meta_log,
-                location_data=location,
-                references=compiled_references,
-                online_results=online_results,
-                send_status_func=send_status_update,
-            )
-            if image is None or status_code != 200:
-                content_obj = {
-                    "image": image,
-                    "intentType": intent_type,
-                    "detail": improved_image_prompt,
-                    "content-type": "application/json",
-                }
-                await send_complete_llm_response(json.dumps(content_obj))
-                continue
+                chat_metadata["agent"] = conversation.agent.slug if conversation.agent else None
 
-            await sync_to_async(save_to_conversation_log)(
-                q,
-                image,
-                user,
-                meta_log,
-                user_message_time,
-                intent_type=intent_type,
-                inferred_queries=[improved_image_prompt],
-                client_application=websocket.user.client_app,
-                conversation_id=conversation_id,
-                compiled_references=compiled_references,
-                online_results=online_results,
-            )
-            content_obj = {"image": image, "intentType": intent_type, "inferredQueries": [improved_image_prompt], "context": compiled_references, "content-type": "application/json", "online_results": online_results}  # type: ignore
+                update_telemetry_state(
+                    request=request,
+                    telemetry_type="api",
+                    api="chat",
+                    metadata=chat_metadata,
+                )
+                iterator = AsyncIteratorWrapper(llm_response)
 
-            await send_complete_llm_response(json.dumps(content_obj))
-            continue
+                async for result in send_event("start_llm_response", ""):
+                    yield result
 
-        await send_status_update(f"**💭 Generating a well-informed response**")
-        llm_response, chat_metadata = await agenerate_chat_response(
-            defiltered_query,
-            meta_log,
-            conversation,
-            compiled_references,
-            online_results,
-            inferred_queries,
-            conversation_commands,
-            user,
-            websocket.user.client_app,
-            conversation_id,
-            location,
-            user_name,
-        )
+                async for item in iterator:
+                    if item is None:
+                        break
+                    if connection_alive:
+                        try:
+                            async for result in send_event("message", f"{item}"):
+                                yield result
+                        except Exception as e:
+                            connection_alive = False
+                            logger.info(
+                                f"User {user} disconnected SSE. Emitting rest of responses to clear thread: {e}"
+                            )
 
-        chat_metadata["agent"] = conversation.agent.slug if conversation.agent else None
-
-        update_telemetry_state(
-            request=websocket,
-            telemetry_type="api",
-            api="chat",
-            metadata=chat_metadata,
-        )
-        iterator = AsyncIteratorWrapper(llm_response)
-
-        await send_message("start_llm_response")
-
-        async for item in iterator:
-            if item is None:
+                async for result in send_event("end_llm_response", ""):
+                    yield result
+            except asyncio.CancelledError:
                 break
-            if connection_alive:
-                try:
-                    await send_message(f"{item}")
-                except ConnectionClosedOK:
-                    connection_alive = False
-                    logger.info(f"User {user} disconnected web socket. Emitting rest of responses to clear thread")
+            except Exception as e:
+                logger.error(f"Error in SSE endpoint: {e}", exc_info=True)
+                break
 
-        await send_message("end_llm_response")
+    return EventSourceResponse(event_generator(q))
 
 
 @api_chat.get("", response_class=Response)
